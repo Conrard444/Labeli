@@ -1,0 +1,3170 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fidlers Print Manager</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='3' fill='%23343432'/%3E%3Crect x='6' y='7' width='20' height='5' fill='%23EA6431'/%3E%3Crect x='6' y='15' width='20' height='3' fill='%23FAF9F6'/%3E%3Crect x='6' y='21' width='13' height='3' fill='%23FAF9F6'/%3E%3C/svg%3E">
+    <script src="https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js"></script>
+    <!-- QR-codes voor de gegenereerde etiketten. De standaard byte-modus van
+         deze bibliotheek codeert één byte per teken (ISO-8859-1), precies wat
+         de etiketten gebruiken. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js"></script>
+    <script async src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <style>
+        .ti::before { content: "□"; }
+    </style>
+    <style>
+        /* Zelfde vormtaal als de Korpus-vergelijker: papierkleur, dunne warme lijnen,
+           kleine hoekstralen, geen verlopen of slagschaduwen. De twee kleuren komen
+           rechtstreeks uit het logo, zodat scherm en briefpapier gelijklopen. */
+        :root{
+            --papier:#FAF9F6;
+            --inkt:#343432;        /* antraciet uit het logo */
+            --oranje:#EA6431;      /* oranje uit het logo */
+            --potlood:#77736C;
+            --lijn:#DEDAD2;
+            --vlak:#F6F4F0;
+            --oranje-vlak:#FDF1EC;
+            --oranje-lijn:#F3C3AC;
+            --groen:#3E6B4F;
+            --groen-vlak:#EDF3EF;
+            --oker:#C08A2E;
+            --geel-vlak:#FDF6E3;
+            --fout:#B3272D;
+            --fout-vlak:#FBEEEE;
+            --blad:#FFFFFF;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--papier);
+            color: var(--inkt);
+            display: flex;
+            height: 100vh;
+        }
+        .cijfer { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+                  font-variant-numeric: tabular-nums; }
+
+        /* ---- zijpaneel ---- */
+        #detailPanel {
+            width: 400px;
+            background: var(--blad);
+            border-right: 1px solid var(--lijn);
+            padding: 22px 20px;
+            overflow-y: auto;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+        }
+        #detailPanel h2, #detailPanel h3 {
+            font-size: 13px; font-weight: 600; letter-spacing: .02em; color: var(--inkt);
+        }
+        #detailPreview {
+            background: var(--papier);
+            border: 1px solid var(--lijn);
+            border-radius: 3px;
+            padding: 8px;
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            min-height: 250px;
+            max-height: 350px;
+        }
+
+        #contentArea { flex: 1; overflow-y: auto; padding: 32px 28px 0; }
+        .container { width: 100%; max-width: 1180px; background: none; }
+
+        /* ---- kop met logo ---- */
+        .header { margin-bottom: 30px; }
+        .logo { display: block; width: 100%; max-width: 430px; height: auto; }
+        /* Gespatieerde kapitalen onder de balk, zoals "maatwerk" in het logo. */
+        .powered {
+            margin-top: 9px; font-size: 10px; letter-spacing: .22em;
+            text-transform: uppercase; color: var(--potlood);
+        }
+        .powered b { color: var(--inkt); font-weight: 600; }
+        .header h1 {
+            font-size: 26px; font-weight: 600; letter-spacing: -.015em; margin: 30px 0 4px;
+        }
+        .header .sub { color: var(--potlood); font-size: 14px; max-width: 60ch; }
+
+        .content { padding: 0 0 110px; }
+
+        /* ---- telkaarten ---- */
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 28px;
+        }
+        .stat-card {
+            background: var(--blad);
+            border: 1px solid var(--lijn);
+            border-radius: 3px;
+            padding: 14px 16px;
+        }
+        .stat-value {
+            font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+            font-variant-numeric: tabular-nums;
+            font-size: 26px; font-weight: 600; color: var(--inkt); margin-bottom: 2px;
+        }
+        .stat-label {
+            font-size: 11px; color: var(--potlood);
+            text-transform: uppercase; letter-spacing: .08em;
+        }
+
+        /* ---- knoppen ---- */
+        .controls { display: flex; gap: 8px; margin-bottom: 28px; flex-wrap: wrap; }
+        button {
+            font: inherit; font-size: 13.5px; font-weight: 500;
+            padding: 7px 15px; border-radius: 2px; cursor: pointer;
+            display: flex; align-items: center; gap: 6px;
+            transition: background .15s, border-color .15s, color .15s;
+        }
+        .btn-primary { background: var(--inkt); color: var(--papier); border: 1px solid var(--inkt); }
+        .btn-primary:hover { background: #242422; }
+        .btn-primary:disabled {
+            background: var(--lijn); border-color: var(--lijn);
+            color: var(--potlood); cursor: default;
+        }
+        .btn-secondary { background: var(--blad); color: var(--inkt); border: 1px solid var(--lijn); }
+        .btn-secondary:hover { border-color: var(--oranje); color: var(--oranje); }
+        button:focus-visible { outline: 2px solid var(--oranje); outline-offset: 2px; }
+        input:focus, select:focus { outline: 2px solid var(--oranje); outline-offset: 1px;
+                                    border-color: var(--oranje); }
+        input[type=text] { font: inherit; }
+
+        /* ---- etiketten ---- */
+        .labels-section h2 {
+            font-size: 13px; font-weight: 600; letter-spacing: .02em; margin-bottom: 10px;
+        }
+        .labels-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+        .plate-group { margin-bottom: 28px; }
+        .plate-group h3 {
+            font-size: 13px; font-weight: 600; color: var(--inkt);
+            margin-bottom: 12px; padding-bottom: 8px;
+            border-bottom: 2px solid var(--oranje);
+        }
+        .plate-group .labels-grid { margin-bottom: 0; }
+
+        .label-card {
+            border: 1px solid var(--lijn);
+            border-radius: 3px;
+            padding: 12px;
+            cursor: pointer;
+            transition: border-color .15s, background .15s;
+            position: relative;
+            background: var(--blad);
+            display: flex;
+            flex-direction: column;
+        }
+        .label-card:hover { border-color: var(--inkt); }
+        /* Geselecteerd is een toestand die je in één oogopslag over een heel raster moet
+           kunnen aflezen: vlak in de accentkleur plus een dikkere linkerrand. */
+        .label-card.selected {
+            background: var(--oranje-vlak);
+            border-color: var(--oranje);
+            box-shadow: inset 3px 0 0 var(--oranje);
+        }
+        .label-card input[type="checkbox"] {
+            position: absolute; top: 12px; right: 12px;
+            width: 17px; height: 17px; cursor: pointer;
+            accent-color: var(--oranje);
+        }
+        .label-info { padding-right: 30px; flex: 1; display: flex; flex-direction: column; }
+        .label-number {
+            font-size: 11px; color: var(--potlood); text-transform: uppercase;
+            font-weight: 600; letter-spacing: .08em; margin-bottom: 3px;
+        }
+        .label-name {
+            font-size: 13.5px; font-weight: 600; color: var(--inkt);
+            margin-bottom: 8px; word-break: break-word;
+        }
+        /* Bevat sinds de omschakeling naar tekst geen miniatuur meer, maar de
+           referentie en afmeting van het stuk. Links uitgelijnd en zonder
+           vaste hoogte, zodat er veel meer kaartjes op het scherm passen. */
+        .label-preview {
+            flex: 1; padding: 0; margin: 0;
+            color: var(--inkt); overflow: hidden;
+            display: flex; flex-direction: column; justify-content: flex-start;
+            text-align: left; line-height: 1.35;
+        }
+        .plate-preview-code { font-weight: bold; font-size: 11px; margin-bottom: 4px; word-break: break-word; }
+        .plate-preview-dims { font-size: 9px; color: var(--potlood); margin-bottom: 4px; line-height: 1.3; }
+        .plate-preview-number { font-size: 14px; font-weight: bold; color: var(--inkt); margin-top: auto; }
+        .label-size { font-size: 12px; color: var(--potlood); }
+
+        /* ---- afdrukselectie ---- */
+        .preview-section {
+            background: var(--blad); border: 1px solid var(--lijn);
+            border-radius: 3px; padding: 16px 18px; margin-bottom: 28px;
+        }
+        .preview-section h3 {
+            font-size: 12px; font-weight: 600; color: var(--potlood);
+            text-transform: uppercase; letter-spacing: .08em; margin-bottom: 11px;
+        }
+        .preview-list { display: flex; flex-wrap: wrap; gap: 7px; }
+        .preview-tag {
+            background: var(--oranje-vlak); color: var(--inkt);
+            border: 1px solid var(--oranje-lijn);
+            padding: 4px 9px; border-radius: 2px; font-size: 12.5px; font-weight: 500;
+        }
+        .preview-empty { color: var(--potlood); font-size: 13px; }
+
+        /* ---- voetbalk ---- */
+        .footer {
+            display: flex; gap: 12px; justify-content: space-between; align-items: center;
+            padding: 14px 28px;
+            border-top: 1px solid var(--lijn);
+            background: var(--blad);
+            position: fixed; bottom: 0; right: 0; left: 400px; z-index: 100;
+        }
+        .print-info { display: flex; align-items: center; gap: 8px;
+                      color: var(--potlood); font-size: 13px; }
+
+        /* ---- meldingen ---- */
+        .status-message {
+            padding: 10px 13px; border-radius: 2px; font-size: 13.5px;
+            margin-bottom: 20px; line-height: 1.6; display: none;
+        }
+        .status-message.success {
+            background: var(--groen-vlak); border-left: 3px solid var(--groen);
+            color: var(--inkt); display: block;
+        }
+        .status-message.error {
+            background: var(--fout-vlak); border-left: 3px solid var(--fout);
+            color: var(--inkt); display: block;
+        }
+        .status-message.info {
+            background: var(--oranje-vlak); border-left: 3px solid var(--oranje);
+            color: var(--inkt); display: block;
+        }
+
+        @media print {
+            body { background: white; }
+            #detailPanel, .footer, .controls { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div id="detailPanel">
+        <div id="ocrProgressPanel" style="display: none; margin-bottom: 15px; padding: 12px; background: #FDF1EC; border: 1px solid #F3C3AC; border-radius: 3px;">
+            <h3 id="ocrProgressTitel" style="margin: 0 0 8px 0; font-size: 11px; color: #343432; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Plaatcodes inlezen</h3>
+            <div style="width: 100%; height: 6px; background: #FDF1EC; border-radius: 3px; overflow: hidden; margin-bottom: 6px;">
+                <div id="ocrProgressBar" style="width: 0%; height: 100%; background: #EA6431; transition: width 0.3s ease;"></div>
+            </div>
+            <div id="ocrProgressText" style="font-size: 11px; color: #343432; text-align: center;">0 van 0</div>
+            <button id="ocrStopKnop" onclick="ocrAfbreken()" style="display: none; width: 100%; margin-top: 8px; padding: 5px; background: white; color: #77736C; border: 1px solid #DEDAD2; border-radius: 3px; cursor: pointer; font-size: 11px;">
+                Afbreken
+            </button>
+        </div>
+
+        <div id="plateCodesPanel" style="display: none; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 2px solid #DEDAD2; flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+            <h3 style="margin: 0 0 8px 0; font-size: 11px; color: #77736C; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;">Plaatcodes</h3>
+            <div id="plateCodesList" style="display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; min-height: 0;"></div>
+        </div>
+
+        <h2 style="margin: 0 0 8px 0; font-size: 14px; font-weight: 600;">Label Detail</h2>
+        <div id="detailPreview" style="background: #F6F4F0; border: 1px solid #DEDAD2; border-radius: 3px; padding: 8px; display: flex; align-items: center; justify-content: center; text-align: center; flex: 0 0 300px; overflow-y: auto;">
+            <div style="color: #77736C;">
+                <p style="font-size: 12px; margin: 0;">Klik op een etiket</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="contentArea">
+        <div class="container">
+        <header class="header">
+            <img class="logo" alt="interieur DEVOLDER maatwerk"
+                 src="data:image/png;base64,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">
+            <div class="powered">Powered by <b>Jez Carbonez Inventions</b></div>
+            <h1>Fidlers Label Print Manager</h1>
+            <div class="sub">Lees een ZPL-bestand in, kies de etiketten die je nodig hebt
+            en stuur ze in één keer naar de Zebra-printer.</div>
+        </header>
+        
+        <div class="content">
+            <div id="statusMessage" class="status-message"></div>
+            
+            <div class="stats" style="grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 15px;">
+                <div class="stat-card" style="padding: 10px; text-align: center;">
+                    <div class="stat-value" id="totalLabels" style="font-size: 20px; margin-bottom: 2px;">0</div>
+                    <div class="stat-label" style="font-size: 10px;">Totaal</div>
+                </div>
+                <div class="stat-card" style="padding: 10px; text-align: center;">
+                    <div class="stat-value" id="selectedLabels" style="font-size: 20px; margin-bottom: 2px;">0</div>
+                    <div class="stat-label" style="font-size: 10px;">Geselecteerd</div>
+                </div>
+            </div>
+            
+            <div class="controls">
+                <button class="btn-primary" id="selectAllBtn" onclick="selectAll()">
+                    <i class="ti ti-checkbox-multiple"></i> Alles selecteren
+                </button>
+                <button class="btn-secondary" id="deselectAllBtn" onclick="deselectAll()">
+                    <i class="ti ti-checkbox-multiple-off"></i> Alles deselecteren
+                </button>
+                <button class="btn-primary" onclick="document.getElementById('afdFileInput').click()"
+                        title="Projectbestand inlezen en de etiketten zelf opbouwen - exacte gegevens, geen OCR">
+                    📐 .Afd project
+                </button>
+                <input type="file" id="afdFileInput" accept=".Afd,.afd" style="display:none" onchange="handleAfdUpload(event)">
+                <button class="btn-secondary" onclick="document.getElementById('prnFileInput').click()">
+                    <i class="ti ti-file-upload"></i> .prn uploaden
+                </button>
+                <button class="btn-secondary" id="templateBtn" onclick="document.getElementById('templateInput').click()"
+                        title="Upload een AutoFit .LaP template voor veldherkenning">
+                    📐 Template
+                </button>
+                <input type="file" id="templateInput" accept=".LaP,.lap,.txt" style="display:none" onchange="handleTemplateUpload(event)">
+                <label id="kruiscontroleLabel" style="display: flex; align-items: center; gap: 6px; padding: 10px 12px; border: 1px solid #DEDAD2; border-radius: 6px; font-size: 13px; cursor: pointer; background: white;"
+                       title="Leest elk veld een tweede keer op hogere resolutie en vergelijkt. Nauwkeuriger, maar ongeveer twee keer zo traag.">
+                    <input type="checkbox" id="kruiscontroleCheck" checked
+                           onchange="kruiscontroleAan = this.checked"
+                           style="cursor: pointer; margin: 0;">
+                    Dubbele controle
+                </label>
+                <button class="btn-secondary" onclick="alleEtikettenUitlezen()"
+                        title="Referentie en afmeting uitlezen voor álle etiketten in dit bestand">
+                    📖 Alles uitlezen
+                </button>
+                <button class="btn-secondary" onclick="showRecentProjects()">
+                    ⏱️ Recent
+                </button>
+                <button class="btn-secondary" onclick="showPrintLogs()">
+                    📋 Logs
+                </button>
+                <input type="file" id="prnFileInput" accept=".prn,.zpl,.txt" style="display:none" onchange="handlePrnUpload(event)">
+            </div>
+            
+            <div class="labels-section">
+                <h2>Beschikbare etiketten</h2>
+                <input type="text" id="labelSearch" placeholder="🔍 Zoeken op label #, plaat, materiaal of gevonden tekst..."
+                       style="width: 100%; padding: 10px; margin-bottom: 8px; border: 1px solid #DEDAD2; border-radius: 6px; font-size: 13px;">
+                <div id="searchInfo" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 15px; padding: 8px 12px; background: #FDF1EC; border: 1px solid #F3C3AC; border-radius: 6px; font-size: 12px; color: #343432;"></div>
+                <div id="labelGroups" style="display: none;">
+                    <!-- Groups will be inserted here -->
+                </div>
+                <div id="labelsGrid" style="display: none;">
+                    <!-- Grid will be inserted here -->
+                </div>
+                <div id="emptyState" style="grid-column: 1/-1; text-align: center; padding: 40px; color: #77736C;">
+                    <p><i class="ti ti-inbox"></i></p>
+                    <p style="margin-top: 16px;">Laad een ZPL-bestand om etiketten te zien</p>
+                </div>
+            </div>
+            
+            <div class="preview-section">
+                <h3>Uw afdrukselectie</h3>
+                <div class="preview-list" id="previewList">
+                    <span class="preview-empty">Selecteer etiketten hierboven</span>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="footer">
+            <div class="print-info">
+                <i class="ti ti-printer"></i>
+                <span>Zebra ZPL printer</span>
+            </div>
+            <button class="btn-primary" id="printBtn" onclick="printSelected()" disabled>
+                <i class="ti ti-printer"></i> 
+                <span id="printBtnText">AFDRUKKEN</span>
+            </button>
+        </div>
+        </div>
+        </div>
+    </div>
+
+    <!-- Recent Projects Modal -->
+    <div id="recentModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+        <div style="background: white; border-radius: 12px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 500px; width: 90%; max-height: 80vh; overflow: auto;">
+            <h2 style="margin: 0 0 20px 0; font-size: 20px; color: #1f2937;">Recent projecten</h2>
+
+            <div id="recentContent" style="margin-bottom: 20px;">
+                <div style="text-align: center; color: #6b7280; padding: 20px;">Geen recent projecten</div>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+                <button onclick="clearRecentProjects()" style="flex: 1; padding: 12px; background: #ef4444; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Wissen</button>
+                <button onclick="document.getElementById('recentModal').style.display='none'" style="flex: 1; padding: 12px; border: 1px solid #e5e7eb; background: white; border-radius: 8px; cursor: pointer; font-weight: 600; color: #6b7280;">Sluiten</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Print Logs Modal -->
+    <div id="logsModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center;">
+        <div style="background: white; border-radius: 12px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 600px; width: 90%; max-height: 80vh; overflow: auto;">
+            <h2 style="margin: 0 0 20px 0; font-size: 20px; color: #1f2937;">Afdrukhistorie</h2>
+
+            <div id="logsContent" style="margin-bottom: 20px; max-height: 400px; overflow-y: auto; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px;">
+                <div style="text-align: center; color: #6b7280;">Geen afdrukken gelogd</div>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+                <button onclick="clearPrintLogs()" style="flex: 1; padding: 12px; background: #ef4444; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Logs wissen</button>
+                <button onclick="document.getElementById('logsModal').style.display='none'" style="flex: 1; padding: 12px; border: 1px solid #e5e7eb; background: white; border-radius: 8px; cursor: pointer; font-weight: 600; color: #6b7280;">Sluiten</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Printer Selection Modal -->
+    <div id="printerModal" style="display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(52,52,50,.42); z-index: 1000; align-items: center; justify-content: center;">
+        <div style="background: white; border-radius: 3px; padding: 30px; box-shadow: 0 12px 40px rgba(52,52,50,.18); max-width: 400px; width: 90%;">
+            <h2 style="margin: 0 0 20px 0; font-size: 20px; color: #343432;">Printer selecteren</h2>
+
+            <div id="printerList" style="margin-bottom: 20px;">
+                <label style="display: flex; align-items: center; padding: 12px; margin-bottom: 8px; border: 1px solid #DEDAD2; border-radius: 3px; cursor: pointer; transition: all 0.2s;">
+                    <input type="radio" name="printer" value="zebra-kitchen" checked style="margin-right: 12px; cursor: pointer;">
+                    <div>
+                        <div style="font-weight: 600; color: #343432;">Zebra Kitchen Printer</div>
+                        <div style="font-size: 12px; color: #77736C;">192.168.1.100</div>
+                    </div>
+                </label>
+
+                <label style="display: flex; align-items: center; padding: 12px; margin-bottom: 8px; border: 1px solid #DEDAD2; border-radius: 3px; cursor: pointer; transition: all 0.2s;">
+                    <input type="radio" name="printer" value="zebra-warehouse" style="margin-right: 12px; cursor: pointer;">
+                    <div>
+                        <div style="font-weight: 600; color: #343432;">Zebra Warehouse Printer</div>
+                        <div style="font-size: 12px; color: #77736C;">192.168.1.101</div>
+                    </div>
+                </label>
+
+                <label style="display: flex; align-items: center; padding: 12px; border: 1px solid #DEDAD2; border-radius: 3px; cursor: pointer; transition: all 0.2s;">
+                    <input type="radio" name="printer" value="pdf" style="margin-right: 12px; cursor: pointer;">
+                    <div>
+                        <div style="font-weight: 600; color: #343432;">PDF exporteren</div>
+                        <div style="font-size: 12px; color: #77736C;">Opslaan als PDF bestand</div>
+                    </div>
+                </label>
+            </div>
+
+            <div style="display: flex; gap: 12px;">
+                <button onclick="document.getElementById('printerModal').style.display='none'" style="flex: 1; padding: 12px; border: 1px solid #DEDAD2; background: white; border-radius: 3px; cursor: pointer; font-weight: 600; color: #77736C;">Annuleren</button>
+                <button onclick="confirmPrint()" style="flex: 1; padding: 12px; background: #343432; color: white; border: none; border-radius: 3px; cursor: pointer; font-weight: 600;">Afdrukken</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let labels = [];
+        let plateCodes = [];
+        let selected = new Set();
+        let selectedPlates = new Set();
+        let previewCache = {}; // Cache voor label previews
+        let collapsedGroups = {}; // Track collapsed material groups (default: all collapsed)
+        let printLogs = []; // Track print history
+        let recentProjects = []; // Track recent projects
+        let searchQuery = ''; // Active zoekfilter (leeg = geen filter)
+
+        // Alle doorzoekbare tekst van een etiket, inclusief OCR-resultaat
+        function labelHaystack(label) {
+            const terms = label.extractedTerms ? label.extractedTerms.join(' ') : '';
+            const raw = label.rawText || '';
+            return `label ${label.id} ${label.name} ${label.plateGroup} ${terms} ${raw}`.toLowerCase();
+        }
+
+        // Eén bron van waarheid: welke etiketten zijn nu zichtbaar?
+        // Combineert de plaatselectie (links) met het zoekfilter.
+        function getVisibleLabels() {
+            let result = labels;
+
+            // Filter op geselecteerde platen
+            if (selectedPlates.size > 0) {
+                result = result.filter(l => {
+                    const plate = plateCodes.find(p => p.plateCode === l.plateGroup);
+                    return plate && selectedPlates.has(plate.id);
+                });
+            }
+
+            // Filter op zoekterm(en) - alle woorden moeten voorkomen
+            const q = searchQuery.trim().toLowerCase();
+            if (q) {
+                const tokens = q.split(/\s+/);
+                result = result.filter(l => {
+                    const hay = labelHaystack(l);
+                    return tokens.every(t => hay.includes(t));
+                });
+            }
+
+            return result;
+        }
+
+        // Load recent projects from localStorage
+        function loadRecentProjects() {
+            try {
+                const stored = localStorage.getItem('recentProjects');
+                recentProjects = stored ? JSON.parse(stored) : [];
+            } catch (e) {
+                recentProjects = [];
+            }
+        }
+
+        // Save recent projects to localStorage
+        function saveRecentProjects() {
+            try {
+                localStorage.setItem('recentProjects', JSON.stringify(recentProjects));
+            } catch (e) {
+                console.error('Error saving recent projects:', e);
+            }
+        }
+
+        // Add or update a recent project
+        function addRecentProject(filename) {
+            // Remove if exists
+            recentProjects = recentProjects.filter(p => p.filename !== filename);
+            
+            // Add to top
+            recentProjects.unshift({
+                filename: filename,
+                timestamp: new Date().toISOString(),
+                date: new Date().toLocaleString('nl-NL')
+            });
+            
+            // Keep only last 10
+            recentProjects = recentProjects.slice(0, 10);
+            saveRecentProjects();
+        }
+
+        // Initialize recent projects on page load
+        loadRecentProjects();
+
+        // Load logs from localStorage
+        function loadPrintLogs() {
+            try {
+                const stored = localStorage.getItem('printLogs');
+                printLogs = stored ? JSON.parse(stored) : [];
+            } catch (e) {
+                printLogs = [];
+            }
+        }
+
+        // Save logs to localStorage
+        function savePrintLogs() {
+            try {
+                localStorage.setItem('printLogs', JSON.stringify(printLogs));
+            } catch (e) {
+                console.error('Error saving logs:', e);
+            }
+        }
+
+        // Log a print action
+        function logPrint(labelIds, printer) {
+            const entry = {
+                timestamp: new Date().toISOString(),
+                printer: printer,
+                labelCount: labelIds.length,
+                labels: labelIds,
+                date: new Date().toLocaleString('nl-NL')
+            };
+            printLogs.push(entry);
+            savePrintLogs();
+        }
+
+        // Initialize logs on page load
+        loadPrintLogs();
+
+        // Show print logs modal
+        function showPrintLogs() {
+            const modal = document.getElementById('logsModal');
+            const content = document.getElementById('logsContent');
+
+            if (printLogs.length === 0) {
+                content.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">Geen afdrukken gelogd</div>';
+            } else {
+                let html = '<div style="font-size: 13px;">';
+                printLogs.slice().reverse().forEach((log, idx) => {
+                    html += `
+                        <div style="padding: 12px; border-bottom: 1px solid #f3f4f6; ${idx === 0 ? '' : ''}">
+                            <div style="font-weight: 600; color: #1f2937;">${log.date}</div>
+                            <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+                                ${log.labelCount} etiket(ten) - ${log.printer}
+                            </div>
+                            <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">
+                                Labels: #${log.labels.join(', #')}
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                content.innerHTML = html;
+            }
+
+            modal.style.display = 'flex';
+        }
+
+        // Clear all print logs
+        function clearPrintLogs() {
+            if (confirm('Weet je zeker dat je alle afdrukhistorie wilt wissen?')) {
+                printLogs = [];
+                savePrintLogs();
+                showPrintLogs();
+                showStatus('Afdrukhistorie gewist', 'success');
+            }
+        }
+
+        // Show recent projects modal
+        function showRecentProjects() {
+            const modal = document.getElementById('recentModal');
+            const content = document.getElementById('recentContent');
+
+            if (recentProjects.length === 0) {
+                content.innerHTML = '<div style="text-align: center; color: #6b7280; padding: 20px;">Geen recent projecten</div>';
+            } else {
+                let html = '<div style="font-size: 13px;">';
+                recentProjects.forEach((project, idx) => {
+                    html += `
+                        <div style="padding: 12px; border-bottom: 1px solid #f3f4f6; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-weight: 600; color: #1f2937;">${project.filename}</div>
+                                <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">${project.date}</div>
+                            </div>
+                            <button onclick="document.getElementById('prnFileInput').click()" style="padding: 6px 12px; background: #0ea5e9; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">Laden</button>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                content.innerHTML = html;
+            }
+
+            modal.style.display = 'flex';
+        }
+
+        // Clear recent projects
+        function clearRecentProjects() {
+            if (confirm('Weet je zeker dat je alle recent projecten wilt wissen?')) {
+                recentProjects = [];
+                saveRecentProjects();
+                showRecentProjects();
+                showStatus('Recent projecten gewist', 'success');
+            }
+        }
+        
+        function loadDemoData() {
+            labels = [
+                { id: 1, name: "Fidlers Premium", size: "100x150mm", data: "Label 1 ZPL data" },
+                { id: 2, name: "Fidlers Classic", size: "100x150mm", data: "Label 2 ZPL data" },
+                { id: 3, name: "Fidlers Standard", size: "100x150mm", data: "Label 3 ZPL data" },
+                { id: 4, name: "Fidlers Deluxe", size: "100x150mm", data: "Label 4 ZPL data" },
+                { id: 5, name: "Fidlers Gold", size: "100x150mm", data: "Label 5 ZPL data" },
+                { id: 6, name: "Fidlers Silver", size: "100x150mm", data: "Label 6 ZPL data" },
+                { id: 7, name: "Fidlers Bronze", size: "100x150mm", data: "Label 7 ZPL data" },
+                { id: 8, name: "Fidlers Steel", size: "100x150mm", data: "Label 8 ZPL data" },
+                { id: 9, name: "Fidlers Titanium", size: "100x150mm", data: "Label 9 ZPL data" },
+                { id: 10, name: "Fidlers Platinum", size: "100x150mm", data: "Label 10 ZPL data" }
+            ];
+            selected.clear();
+            updateUI();
+            showStatus('Demo-bestand geladen met 10 etiketten', 'info');
+        }
+
+        function handlePrnUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const content = e.target.result;
+                parsePrnFile(content, file.name);
+            };
+            reader.onerror = function() {
+                showStatus('Fout bij het lezen van het bestand', 'error');
+            };
+            reader.readAsText(file);
+        }
+
+        function parsePrnFile(content, filename) {
+            // Add to recent projects
+            addRecentProject(filename);
+
+            // Remove everything before the first ^XA (printer configuration)
+            const firstXAIndex = content.indexOf('^XA');
+            if (firstXAIndex === -1) {
+                showStatus('Geen geldige ZPL-labels gevonden in bestand', 'error');
+                return;
+            }
+
+            // Split op ^XA en ^XZ om afzonderlijke labels te vinden
+            const labelBlocks = content.substring(firstXAIndex)
+                .split(/\^XA/)
+                .filter(block => {
+                    // Remove ## markers and whitespace, keep blocks with actual ZPL content
+                    const cleaned = block.replace(/^#+\s*/, '').trim();
+                    return cleaned.length > 10; // Must have meaningful content
+                });
+
+            if (labelBlocks.length === 0) {
+                showStatus('Geen geldige ZPL-labels gevonden in bestand', 'error');
+                return;
+            }
+
+            labels = [];
+            plateCodes = [];
+            let currentPlateType = null;
+            let plateCounter = 0;
+            let realLabelCount = 0;  // Counter for actual labels shown to user
+
+            labelBlocks.forEach((block, index) => {
+                // Clean ## markers from block
+                const cleanBlock = block.replace(/^#+\s*/, '').trim();
+                const labelNumber = index + 1;
+                const blockSize = cleanBlock.length;
+
+                // Detecteer plaattype via GFA grootte: plaattypes hebben kleinere graphics (~1000-1100)
+                const gfaMatch = cleanBlock.match(/\^GFA,(\d+),/);
+                const gfaSize = gfaMatch ? parseInt(gfaMatch[1]) : 0;
+                const isPlateType = gfaSize > 900 && gfaSize < 1200;
+
+                if (isPlateType) {
+                    // Extract plate info
+                    const textMatches = cleanBlock.match(/\^FD([^^]+)\^FS/g) || [];
+
+                    // Parse plaatcode, dimensions, and number
+                    let plateCode = '';
+                    let dimensions = '';
+                    let plateNumber = '';
+
+                    if (textMatches.length > 0) {
+                        plateCode = textMatches[0].replace(/\^FD|\^FS/g, '').trim();
+                        if (textMatches.length > 1) {
+                            dimensions = textMatches[1].replace(/\^FD|\^FS/g, '').trim();
+                        }
+                        if (textMatches.length > 2) {
+                            plateNumber = textMatches[2].replace(/\^FD|\^FS/g, '').trim();
+                        }
+                    }
+
+                    plateCounter++;
+
+                    // Maak display naam van plaatcode
+                    let plateName = plateCode || `Plaat ${plateCounter}`;
+                    if (plateCode && plateCode.length > 0) {
+                        // Gebruik plaatcode als naam
+                        plateName = plateCode;
+                    }
+
+                    const plateTypeData = {
+                        id: plateCounter,
+                        plateCode: plateName,  // Dit wordt gebruikt als groepnaam
+                        dimensions: dimensions,
+                        number: plateNumber || plateCounter.toString(),
+                        labelNumber: labelNumber,
+                        data: `^XA${cleanBlock}^XZ`,
+                        rawPlateCode: plateCode
+                    };
+                    plateCodes.push(plateTypeData);
+
+                    currentPlateType = plateTypeData;
+                } else if (blockSize < 200 || !gfaMatch) {
+                    // Skip headers/config blocks
+                } else {
+                    // This is a regular label - assign to current plate group
+                    if (!currentPlateType) {
+                        // If we haven't found a plate type yet, create default
+                        plateCounter++;
+                        currentPlateType = {
+                            plateCode: `Plaat ${plateCounter}`,
+                            dimensions: '',
+                            number: plateCounter.toString(),
+                            labelNumber: 0,
+                            data: ''
+                        };
+                    }
+
+                    // Extract size
+                    const llMatch = cleanBlock.match(/\^LL(\d+)/);
+                    const pwMatch = cleanBlock.match(/\^PW(\d+)/);
+                    const width = pwMatch ? pwMatch[1] : "831";
+                    const height = llMatch ? llMatch[1] : "2374";
+
+                    const plateGroup = currentPlateType ? currentPlateType.plateCode : `Plaat ${plateCounter || 1}`;
+                    realLabelCount++;
+
+                    labels.push({
+                        id: realLabelCount,  // Use real label number for ID
+                        name: `Label ${realLabelCount}`,
+                        size: `${width}x${height}`,
+                        width: parseInt(width) || 831,
+                        height: parseInt(height) || 2374,
+                        plateGroup: plateGroup,
+                        plateData: currentPlateType,
+                        data: `^XA${cleanBlock}^XZ`,
+                        isPlateType: false,
+                        blockSize: blockSize,
+                        gfaSize: gfaSize
+                    });
+                }
+            });
+
+            selected.clear();
+            selectedPlates.clear();
+            searchQuery = '';
+            const searchInput = document.getElementById('labelSearch');
+            if (searchInput) searchInput.value = '';
+            updateUI();
+            const plateCount = new Set(labels.map(l => l.plateGroup)).size;
+            showStatus(`${labels.length} label(s) geladen uit ${filename} (Verdeeld over ${plateCodes.length} platen). Plaatcodes aan het extraheren...`, 'info');
+
+            // Reset file input
+            document.getElementById('prnFileInput').value = '';
+
+            // Auto-extract plate codes
+            if (plateCodes.length > 0) {
+                console.log('Auto-extracting plate codes...');
+                // Start immediately with slight delay to ensure DOM is ready
+                setTimeout(() => {
+                    extractPlateCodesOCR();
+                }, 100);
+            }
+        }
+        
+        function getPlateGroupKey(plate) {
+            // Extract the primary material code from the plate's extracted terms
+            if (!plate.extractedTerms || plate.extractedTerms.length === 0) {
+                return 'Overig';
+            }
+
+            // Find the first significant term (usually 3-10 chars, alphabetic)
+            for (const term of plate.extractedTerms) {
+                if (term.length >= 2 && term.length <= 15 && /^[A-Za-z0-9_\-]+$/.test(term)) {
+                    // Skip common small words
+                    if (!['http', 'https', 'www'].includes(term.toLowerCase())) {
+                        return term;
+                    }
+                }
+            }
+
+            return 'Overig';
+        }
+
+        function updatePlateCodesUI() {
+            const panel = document.getElementById('plateCodesPanel');
+            const list = document.getElementById('plateCodesList');
+
+            if (plateCodes.length === 0) {
+                panel.style.display = 'none';
+                return;
+            }
+
+            panel.style.display = 'block';
+
+            // Group plates by material (extract material name from plateCode)
+            const materialGroups = {};
+            plateCodes.forEach(plate => {
+                // Extract material name (e.g. "MDF18" from "MDF18 Plaat 1")
+                const materialMatch = plate.plateCode.match(/^(.+?)\s+Plaat\s+\d+$/);
+                const material = materialMatch ? materialMatch[1] : plate.plateCode;
+                
+                if (!materialGroups[material]) {
+                    materialGroups[material] = [];
+                }
+                materialGroups[material].push(plate);
+            });
+
+            // Render grouped plates
+            let html = '';
+            Object.keys(materialGroups).sort().forEach(material => {
+                const plates = materialGroups[material];
+                const allSelected = plates.every(p => selectedPlates.has(p.id));
+                const someSelected = plates.some(p => selectedPlates.has(p.id));
+                const isCollapsed = collapsedGroups[material] !== false; // Default collapsed
+
+                // Material header with group select and toggle
+                html += `
+                    <div style="padding: 8px 0; margin-top: 8px;">
+                        <div style="display: flex; align-items: center; gap: 4px; padding: 6px 0; cursor: pointer; margin-bottom: 4px;">
+                            <button onclick="event.stopPropagation(); toggleMaterialGroupCollapse('${material.replace(/'/g, "\\'")}')"
+                                    style="width: 18px; height: 18px; background: none; border: none; cursor: pointer; padding: 0; font-size: 12px; flex-shrink: 0;">
+                                ${isCollapsed ? '▶' : '▼'}
+                            </button>
+                            <input type="checkbox" ${allSelected ? 'checked' : ''} ${someSelected && !allSelected ? 'indeterminate' : ''}
+                                   onclick="event.stopPropagation(); selectMaterialGroup('${material.replace(/'/g, "\\'")}')"
+                                   style="width: 16px; height: 16px; cursor: pointer; flex-shrink: 0;">
+                            <div style="flex: 1; font-weight: 700; font-size: 13px; color: #343432;">
+                                ${material}
+                            </div>
+                            <button onclick="event.stopPropagation(); materiaalgroepUitlezen('${material.replace(/'/g, "\\'")}')"
+                                    style="padding: 2px 6px; background: #EA6431; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 10px; white-space: nowrap; flex-shrink: 0;"
+                                    title="Referentie en afmeting uitlezen voor alle etiketten van ${material}">
+                                Lees
+                            </button>
+                            <div style="font-size: 11px; color: #77736C; min-width: 14px; text-align: right;">
+                                ${plates.length}
+                            </div>
+                        </div>
+                `;
+
+                // Plates in this material group (hidden if collapsed)
+                if (!isCollapsed) {
+                    plates.forEach(plate => {
+                        const isSelected = selectedPlates.has(plate.id);
+                        const plateLabels = labels.filter(l => {
+                            const pId = plateCodes.find(p => p.plateCode === l.plateGroup)?.id;
+                            return pId === plate.id;
+                        });
+
+                        html += `
+                            <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 28px; background: ${isSelected ? '#EA6431' : '#F6F4F0'}; border: 1px solid #DEDAD2; border-radius: 4px; font-size: 11px; margin-bottom: 2px; transition: all 0.2s;"
+                                 onmouseover="this.style.background = '${isSelected ? '#242422' : '#FDF1EC'}';"
+                                 onmouseout="this.style.background = '${isSelected ? '#EA6431' : '#F6F4F0'}';">
+                                <input type="checkbox" ${isSelected ? 'checked' : ''}
+                                       onchange="togglePlateFilter(${plate.id})"
+                                       style="width: 14px; height: 14px; cursor: pointer; flex-shrink: 0;">
+                                <div style="flex: 1; color: ${isSelected ? 'white' : '#343432'}; word-break: break-word; font-size: 11px;">
+                                    ${plate.plateCode}
+                                </div>
+                                <div style="font-size: 10px; color: ${isSelected ? '#F3C3AC' : '#77736C'}; min-width: 18px; text-align: right; flex-shrink: 0;">
+                                    ${plateLabels.length}
+                                </div>
+                                <button onclick="event.stopPropagation(); extractSinglePlateOCR(${plate.id})"
+                                        style="padding: 1px 4px; background: #343432; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; white-space: nowrap; flex-shrink: 0;"
+                                        title="OCR"
+                                        onmouseover="this.style.background = '#242422';"
+                                        onmouseout="this.style.background = '#343432';">
+                                    🔍
+                                </button>
+                            </div>
+                        `;
+                    });
+                }
+
+                html += `</div>`;
+            });
+
+            list.innerHTML = html;
+        }
+
+        function toggleMaterialGroupCollapse(material) {
+            collapsedGroups[material] = !collapsedGroups[material];
+            updatePlateCodesUI();
+        }
+
+        function selectMaterialGroup(material) {
+            // Find all plates with this material
+            const platesToToggle = plateCodes.filter(p => {
+                const materialMatch = p.plateCode.match(/^(.+?)\s+Plaat\s+\d+$/);
+                const plateMaterial = materialMatch ? materialMatch[1] : p.plateCode;
+                return plateMaterial === material;
+            });
+
+            if (platesToToggle.length === 0) return;
+
+            const allSelected = platesToToggle.every(p => selectedPlates.has(p.id));
+
+            // Toggle all plates in this material group and their labels
+            platesToToggle.forEach(plate => {
+                if (allSelected) {
+                    selectedPlates.delete(plate.id);
+                } else {
+                    selectedPlates.add(plate.id);
+                }
+
+                // Also select/deselect all labels for this plate
+                const plateLabels = labels.filter(l => l.plateGroup === plate.plateCode);
+                plateLabels.forEach(label => {
+                    if (allSelected) {
+                        selected.delete(label.id);
+                    } else {
+                        selected.add(label.id);
+                    }
+                });
+            });
+
+            // Update UI - this will also filter labels on the right
+            updateUI();
+            updateStats();
+            updatePrintButton();
+        }
+
+        // ---------------------------------------------------------------
+        //  ETIKETTEN UITLEZEN (referentie + afmeting)
+        //
+        //  Eén gedeelde routine voor alle drie de knoppen: per plaat, per
+        //  materiaalgroep en voor het hele bestand. Het werk wordt over de
+        //  workers verdeeld, met voortgang en een afbreekknop, want bij
+        //  honderden etiketten duurt dit minuten.
+        // ---------------------------------------------------------------
+
+        let ocrBezig = false;
+
+        function labelsVanPlaat(plateId) {
+            const plate = plateCodes.find(p => p.id === plateId);
+            if (!plate) return [];
+            return labels.filter(l => l.plateGroup === plate.plateCode);
+        }
+
+        function platenVanMateriaal(material) {
+            return plateCodes.filter(p => {
+                const m = p.plateCode.match(/^(.+?)\s+Plaat\s+\d+$/);
+                return (m ? m[1] : p.plateCode) === material;
+            });
+        }
+
+        async function etikettenUitlezen(teLezen, omschrijving) {
+            if (ocrBezig) {
+                showStatus('Er loopt al een uitlezing - breek die eerst af', 'error');
+                return;
+            }
+            if (typeof Tesseract === 'undefined') {
+                showStatus('Tesseract is nog niet geladen', 'error');
+                return;
+            }
+
+            // Al gelezen etiketten overslaan
+            const openstaand = teLezen.filter(l => !l.fields && !l.extractedTerms);
+            if (openstaand.length === 0) {
+                showStatus(`${omschrijving}: alles was al uitgelezen`, 'info');
+                return;
+            }
+
+            ocrBezig = true;
+            ocrAfgebroken = false;
+            toonOcrVoortgang(`${omschrijving} uitlezen`, 0, openstaand.length);
+
+            const start = Date.now();
+            const taken = openstaand.map(label => (werker) => performLabelOCR(label, werker));
+
+            const gedaan = await ocrTakenUitvoeren(taken, (n, totaal) => {
+                const verstreken = (Date.now() - start) / 1000;
+                const resterend = Math.round(verstreken / n * (totaal - n));
+                toonOcrVoortgang(`${omschrijving} uitlezen`, n, totaal, resterend);
+            });
+
+            ocrBezig = false;
+            verbergOcrVoortgang();
+            updateUI();
+
+            if (ocrAfgebroken) {
+                showStatus(`Afgebroken na ${gedaan} van ${openstaand.length} etiketten`, 'info');
+            } else {
+                const sec = Math.round((Date.now() - start) / 1000);
+                showStatus(`${gedaan} etiketten uitgelezen (${sec}s)`, 'success');
+            }
+        }
+
+        async function extractSinglePlateOCR(plateId) {
+            const plate = plateCodes.find(p => p.id === plateId);
+            const teLezen = labelsVanPlaat(plateId);
+            if (teLezen.length === 0) {
+                showStatus('Geen etiketten gevonden voor deze plaat', 'error');
+                return;
+            }
+            await etikettenUitlezen(teLezen, plate ? plate.plateCode : 'Plaat');
+        }
+
+        async function materiaalgroepUitlezen(material) {
+            const platen = platenVanMateriaal(material);
+            const teLezen = [];
+            platen.forEach(p => labelsVanPlaat(p.id).forEach(l => teLezen.push(l)));
+            if (teLezen.length === 0) {
+                showStatus(`Geen etiketten gevonden voor ${material}`, 'error');
+                return;
+            }
+            await etikettenUitlezen(teLezen, material);
+        }
+
+        async function alleEtikettenUitlezen() {
+            const openstaand = labels.filter(l => !l.fields && !l.extractedTerms);
+            if (openstaand.length === 0) {
+                showStatus('Alle etiketten zijn al uitgelezen', 'info');
+                return;
+            }
+            // Bij grote aantallen eerst een eerlijke schatting tonen
+            const perEtiket = kruiscontroleAan ? 1.1 : 0.5; // seconden, gemeten
+            const schatting = Math.round(openstaand.length * perEtiket);
+            const tijd = schatting > 90
+                ? `ongeveer ${Math.round(schatting / 60)} minuten`
+                : `ongeveer ${schatting} seconden`;
+
+            if (openstaand.length > 40 &&
+                !confirm(`${openstaand.length} etiketten uitlezen duurt ${tijd}` +
+                         (kruiscontroleAan ? '\n\nZet "Dubbele controle" uit om het ruim twee keer zo snel te doen.' : '') +
+                         '\n\nDoorgaan?')) {
+                return;
+            }
+            await etikettenUitlezen(labels, 'Alle etiketten');
+        }
+
+        function toonOcrVoortgang(titel, n, totaal, resterendSec) {
+            const paneel = document.getElementById('ocrProgressPanel');
+            const balk = document.getElementById('ocrProgressBar');
+            const tekst = document.getElementById('ocrProgressText');
+            const kop = document.getElementById('ocrProgressTitel');
+            const stop = document.getElementById('ocrStopKnop');
+            if (!paneel) return;
+
+            paneel.style.display = 'block';
+            if (kop) kop.textContent = titel;
+            if (balk) balk.style.width = totaal ? (n / totaal * 100) + '%' : '0%';
+            if (tekst) {
+                tekst.textContent = `${n} van ${totaal}` +
+                    (resterendSec > 0 && n > 0 ? ` — nog ~${resterendSec > 90
+                        ? Math.round(resterendSec / 60) + ' min' : resterendSec + 's'}` : '');
+            }
+            if (stop) stop.style.display = 'block';
+        }
+
+        function verbergOcrVoortgang() {
+            const paneel = document.getElementById('ocrProgressPanel');
+            const stop = document.getElementById('ocrStopKnop');
+            if (paneel) paneel.style.display = 'none';
+            if (stop) stop.style.display = 'none';
+        }
+
+        function ocrAfbreken() {
+            ocrAfgebroken = true;
+            showStatus('Bezig met afbreken...', 'info');
+        }
+
+
+        async function performLabelOCR(label, werker) {
+            try {
+                const z64Match = label.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+                if (!z64Match) return;
+
+                const gfaMatch = label.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+                if (!gfaMatch) return;
+
+                const bitmap = decompressGFA(z64Match[1]);
+                if (!bitmap) return;
+
+                const bytesPerRow = parseInt(gfaMatch[3]);
+                const width = bytesPerRow * 8;
+                const height = Math.ceil(bitmap.length / bytesPerRow);
+
+                let pathD = '';
+                for (let y = 0; y < height; y++) {
+                    const flippedY = height - 1 - y;
+                    for (let x = 0; x < width; x += 8) {
+                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+                        if (byteIndex >= bitmap.length) break;
+
+                        const byte = bitmap[byteIndex];
+                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
+                            if ((byte & (0x80 >> bit)) !== 0) {
+                                const flippedX = width - 1 - (x + bit);
+                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
+                            }
+                        }
+                    }
+                }
+
+                // Render at 2x scale for better OCR accuracy
+                const scale = 2;
+                const canvas = document.createElement('canvas');
+                canvas.width = width * scale;
+                canvas.height = height * scale;
+                const ctx = canvas.getContext('2d');
+
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'black';
+
+                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
+                for (const part of pathParts) {
+                    const match = part.match(/M(\d+),(\d+)/);
+                    if (match) {
+                        const x = parseInt(match[1]) * scale;
+                        const y = parseInt(match[2]) * scale;
+                        ctx.fillRect(x, y, scale, scale);
+                    }
+                }
+
+                const imageData = canvas.toDataURL('image/png', 0.95);
+
+                if (typeof Tesseract !== 'undefined') {
+                    const result = await ocrHerken(imageData, werker);
+                    let text = result.data.text;
+
+                    // Post-process common OCR errors
+                    text = text.replace(/Z0/g, '25');
+                    text = text.replace(/Zo/g, '25');
+                    text = text.replace(/O(?=\d)/g, '0');
+                    text = text.replace(/\bl\b/g, '1');
+                    text = text.replace(/\bO\b/g, '0');
+                    text = text.replace(/S(?=\d)/g, '5');
+                    text = text.replace(/B(?=\d)/g, '8');
+
+                    label.rawTextRaw = text; // onbewerkt, voor diagnose
+
+                    // Met template: regels aan velden koppelen en ruis
+                    // (barcodes, gedraaide randteksten, tekening) weggooien.
+                    if (labelTemplate && Array.isArray(result.data.lines)) {
+                        const { velden, ruis } = mapLinesToTemplate(
+                            result.data.lines, canvas.width, canvas.height
+                        );
+
+                        if (velden.length > 0) {
+                            if (kruiscontroleAan) {
+                                await kruiscontroleerVelden(label, velden, canvas, werker);
+                            }
+                            controleerStructuur(velden);
+                            label.fields = velden;
+                            label.extractedTerms = betrouwbareWaarden(velden);
+                            label.rawText = betrouwbareWaarden(velden).join('\n');
+                            label.discardedNoise = ruis;
+                            return;
+                        }
+                        // Geen enkel veld herkend: terugvallen op losse termen
+                    }
+
+                    // Zonder template: losse termen zoals voorheen.
+                    // Niet splitsen op _ en - : die horen bij de code zelf
+                    const terms = text.split(/[\s\n,\.()]+/)
+                        .filter(t => t.length > 1)
+                        .filter(t => !/^\d+$/.test(t))
+                        .map(t => t.trim())
+                        .filter((t, i, arr) => arr.indexOf(t) === i);
+
+                    label.fields = null;
+                    label.extractedTerms = terms;
+                    label.rawText = text;
+                }
+            } catch (error) {
+                console.error('Label OCR error:', error);
+            }
+        }
+
+        // =====================================================================
+        //  ETIKETTEMPLATE (.LaP)
+        //
+        //  Een AutoFit-template beschrijft per laag wat er waar op het etiket
+        //  staat. Daarmee weten we (a) welk veld een stuk herkende tekst is en
+        //  (b) welke gebieden geen leesbare tekst bevatten - gedraaide
+        //  randteksten, barcodes en de tekening - zodat we die ruis
+        //  wegfilteren in plaats van als zoekterm op te nemen.
+        //
+        //  De template is optioneel: zonder template werkt de OCR zoals
+        //  voorheen. Hij wordt geüpload, niet hardgecodeerd, zodat een
+        //  gewijzigde of andere bedrijfstemplate gewoon meegaat.
+        // =====================================================================
+
+        let labelTemplate = null;
+
+        // Bekende AutoFit-veldnamen -> Nederlandse omschrijving.
+        // Onbekende velden vallen terug op hun eigen naam, zodat de tool ook
+        // werkt met templates van een ander bedrijf.
+        const TEMPLATE_FIELD_NAMES = {
+            PartRef: 'Referentie',
+            PartMat: 'Materiaal',
+            PartRem: 'Opmerking',
+            PartCnc: 'CNC',
+            PartSecondCnc: 'CNC 2',
+            PartL: 'Lengte', PartW: 'Breedte', PartT: 'Dikte',
+            PartCoatedL: 'Bekleed L', PartCoatedW: 'Bekleed B',
+            PartCoatingNameTop: 'Kantband boven',
+            PartCoatingNameBottom: 'Kantband onder',
+            PartCoatingNameLeft: 'Kantband links',
+            PartCoatingNameRight: 'Kantband rechts'
+        };
+
+        function parseLaPTemplate(content) {
+            const raw = {};
+            let pageWidth = 1000, pageHeight = 600;
+
+            content.split(/\r?\n/).forEach(line => {
+                let m = line.match(/^\[Label\]\[PageWidth\]=(\d+)/);
+                if (m) { pageWidth = parseInt(m[1]); return; }
+                m = line.match(/^\[Label\]\[PageHeight\]=(\d+)/);
+                if (m) { pageHeight = parseInt(m[1]); return; }
+
+                // [Label][Layer <Sleutel> -<N>-]=<waarde>
+                m = line.match(/^\[Label\]\[Layer (.+?) -(\d+)-\]=(.*)$/);
+                if (m) {
+                    const key = m[1].trim(), n = parseInt(m[2]);
+                    if (!raw[n]) raw[n] = {};
+                    raw[n][key] = m[3];
+                }
+            });
+
+            const layers = Object.keys(raw).map(n => {
+                const r = raw[n];
+                const pos = (r['Pos'] || '0,0').split(',').map(v => parseFloat(v) || 0);
+                const font = (r['Font'] || '').split(',');
+                // 3e veld van de fontspec is de rotatie in 0,1 graden
+                const escapement = font.length > 2 ? (parseInt(font[2]) || 0) : 0;
+                const type = parseInt(r['Type']);
+                // Ook U+FFFD weghalen: de Text-regels eindigen in dit formaat
+                // op niet-afdrukbare bytes die als vervangingsteken overblijven.
+                // Laat je die staan, dan lijkt elk veld een vast scheidingsteken
+                // te hebben en klopt de structuurcontrole nergens meer.
+                const text = (r['Text'] || '')
+                    .replace(/[\x00-\x1F\x7F-\x9F�﻿]/g, '')
+                    .trim();
+
+                const placeholders = [];
+                const re = /\[([A-Za-z][A-Za-z0-9]*)(?:\|[^\]]*)?\]/g;
+                let pm;
+                while ((pm = re.exec(text)) !== null) placeholders.push(pm[1]);
+
+                // Kantbandregels worden bewust overgeslagen. Ze staan aan de
+                // randen van het etiket, bestaan grotendeels uit schuine
+                // strepen tussen lege waarden, en worden daardoor stelselmatig
+                // verkeerd gelezen ("/982.0/ / 0" wordt "1982.07 10"). Voor
+                // zoeken en filteren voegen ze niets toe, en overslaan scheelt
+                // een dubbele lezing per etiket.
+                const isCoating = placeholders.some(p => /^PartCoatingName/i.test(p));
+
+                const rect = (r['Rectangle'] || '0,0').split(',').map(v => parseFloat(v) || 0);
+                const barcode = (r['Barcode'] || '').split(',').map(v => parseFloat(v));
+                const conditie = (r['Condition'] || '')
+                    .replace(/[\x00-\x1F\x7F-\x9F�﻿]/g, '').trim();
+
+                return {
+                    n: parseInt(n),
+                    type: type,
+                    posX: pos[0], posY: pos[1],
+                    rectW: rect[0], rectH: rect[1],
+                    font: r['Font'] || '',
+                    barcode: barcode,
+                    conditie: conditie,
+                    escapement: escapement,
+                    text: text,
+                    placeholders: placeholders,
+                    isCoating: isCoating,
+                    // Overslaan: barcode (1), tekening (2), gedraaide tekst,
+                    // of een kantbandregel
+                    isNoise: type === 1 || type === 2 ||
+                             (type === 0 && escapement !== 0) || isCoating,
+                    // Bruikbaar tekstveld: rechte tekst met minstens één veld
+                    isField: type === 0 && escapement === 0 &&
+                             placeholders.length > 0 && !isCoating,
+                    fieldLabel: describeTemplateField(placeholders)
+                };
+            }).filter(l => !isNaN(l.type));
+
+            return { pageWidth, pageHeight, layers };
+        }
+
+        function describeTemplateField(placeholders) {
+            if (!placeholders.length) return null;
+            // Lengte+breedte samen is in de praktijk altijd de afmetingsregel
+            if (placeholders.indexOf('PartL') !== -1 && placeholders.indexOf('PartW') !== -1) {
+                return 'Afmeting';
+            }
+            const named = placeholders.map(k =>
+                TEMPLATE_FIELD_NAMES[k] || k.replace(/^PartExt0?/, 'Extra ')
+            );
+            const uniek = named.filter((v, i, a) => a.indexOf(v) === i);
+            return uniek.slice(0, 2).join(' / ');
+        }
+
+        // Koppelt herkende OCR-regels aan template-lagen op basis van positie.
+        // Regels die het dichtst bij een ruislaag liggen worden weggegooid.
+        function mapLinesToTemplate(lines, imgW, imgH) {
+            const tpl = labelTemplate;
+            const velden = [];
+            const ruis = [];
+
+            lines.forEach(line => {
+                const tekst = (line.text || '').trim();
+                if (!tekst) return;
+
+                const b = line.bbox;
+                const tx0 = b.x0 / imgW * tpl.pageWidth;
+                const txc = (b.x0 + b.x1) / 2 / imgW * tpl.pageWidth;
+                const ty  = (b.y0 + b.y1) / 2 / imgH * tpl.pageHeight;
+
+                // Beste laag zoeken: verticaal is bepalend, horizontaal beslist
+                // bij gelijke hoogte. De positie in de template is het ankerpunt
+                // van de tekst, dus we vergelijken met zowel de linkerrand als
+                // het midden van de herkende regel.
+                // Gedraaide teksten lopen loodrecht op hun ankerpunt, dus hun
+                // regelmidden kan langs één as ver weg liggen. Daarom geen
+                // harde verticale drempel maar een gewogen afstand: hoogte
+                // telt dubbel, en er geldt één ruime bovengrens.
+                let beste = null, besteAfstand = Infinity;
+                tpl.layers.forEach(l => {
+                    if (l.type === 3) return; // kader overslaan
+                    const dy = Math.abs(l.posY - ty);
+                    const dx = Math.min(Math.abs(l.posX - tx0), Math.abs(l.posX - txc));
+                    if (dy > 90) return;
+                    const afstand = dy * 2 + dx;
+                    if (afstand < besteAfstand) { besteAfstand = afstand; beste = l; }
+                });
+                if (besteAfstand > 500) beste = null;
+
+                if (!beste) { ruis.push(tekst); return; }
+                if (beste.isNoise) { ruis.push(tekst); return; }
+                if (!beste.isField) { ruis.push(tekst); return; } // vaste tekst
+
+                velden.push({
+                    laag: beste.n,
+                    naam: beste.fieldLabel,
+                    waarde: tekst,
+                    zekerheid: Math.round(line.confidence),
+                    bbox: b // nodig voor de kruiscontrole
+                });
+            });
+
+            velden.sort((a, b) => a.laag - b.laag);
+            return { velden, ruis };
+        }
+
+        function handleAfdUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            if (!labelTemplate) {
+                showStatus('Laad eerst de etikettemplate (.LaP) - die bepaalt de opmaak', 'error');
+                event.target.value = '';
+                return;
+            }
+
+            showStatus(`${file.name} inlezen...`, 'info');
+            const reader = new FileReader();
+
+            reader.onload = e => {
+                try {
+                    const stukken = parseAfd(e.target.result);
+                    if (stukken.length === 0) {
+                        showStatus('Geen stuklijst gevonden in dit .Afd bestand', 'error');
+                        return;
+                    }
+
+                    afdParts = stukken;
+                    afdProject = file.name.replace(/\.afd$/i, '');
+
+                    // Omzetten naar de etikettenlijst die de rest van de tool
+                    // gebruikt. De velden zijn hier exact bekend, dus geen OCR
+                    // en geen onzekerheid.
+                    labels = stukken.map((s, i) => ({
+                        id: i + 1,
+                        name: s.ref,
+                        size: `${s.L} x ${s.W} x ${s.T}`,
+                        plateGroup: s.mat,
+                        afd: s,
+                        bron: 'afd',
+                        fields: [
+                            { naam: 'Referentie', waarde: s.ref, zekerheid: 100, status: 'exact' },
+                            { naam: 'Omschrijving', waarde: s.oms, zekerheid: 100, status: 'exact' },
+                            { naam: 'Materiaal', waarde: s.mat, zekerheid: 100, status: 'exact' },
+                            { naam: 'Afmeting', waarde: `${s.L} x ${s.W} x ${s.T} (${s.coatedL} x ${s.coatedW})`, zekerheid: 100, status: 'exact' },
+                            { naam: 'Project', waarde: [s.ext.PartExt10, s.ext.PartExt09].filter(Boolean).join(' - '), zekerheid: 100, status: 'exact' },
+                            { naam: 'CNC', waarde: s.cnc, zekerheid: 100, status: 'exact' }
+                        ].filter(v => v.waarde),
+                        extractedTerms: [s.ref, s.mat, s.oms, s.cnc,
+                                         s.ext.PartExt09, s.ext.PartExt10].filter(Boolean),
+                        rawText: [s.ref, s.oms, s.mat, s.cnc,
+                                  s.ext.PartExt09, s.ext.PartExt10].filter(Boolean).join('\n')
+                    }));
+
+                    // Materialen vullen de plaatcodelijst links
+                    const materialen = [];
+                    labels.forEach(l => {
+                        if (materialen.indexOf(l.plateGroup) === -1) materialen.push(l.plateGroup);
+                    });
+                    plateCodes = materialen.map((mat, i) => ({
+                        id: i + 1, plateCode: mat, materialCode: mat,
+                        dimensions: '', number: String(i + 1), data: ''
+                    }));
+
+                    selected.clear();
+                    selectedPlates.clear();
+                    searchQuery = '';
+                    const zoek = document.getElementById('labelSearch');
+                    if (zoek) zoek.value = '';
+                    previewCache = {};
+
+                    addRecentProject(file.name);
+                    verbergOcrVoortgang();
+                    document.getElementById('plateCodesPanel').style.display = 'block';
+                    updatePlateCodesUI();
+                    updateUI();
+
+                    showStatus(`${stukken.length} stuks ingelezen uit ${file.name} ` +
+                               `(${materialen.length} materialen) - exacte gegevens, geen OCR nodig`, 'success');
+                } catch (err) {
+                    console.error('Afd parse error:', err);
+                    showStatus('Kon het .Afd bestand niet lezen: ' + err.message, 'error');
+                }
+                event.target.value = '';
+            };
+
+            reader.onerror = () => showStatus('Fout bij het lezen van het bestand', 'error');
+            reader.readAsArrayBuffer(file);
+        }
+
+        function handleTemplateUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => {
+                try {
+                    const parsed = parseLaPTemplate(e.target.result);
+                    const velden = parsed.layers.filter(l => l.isField).length;
+                    if (velden === 0) {
+                        showStatus('Geen tekstvelden gevonden - is dit een AutoFit .LaP bestand?', 'error');
+                        return;
+                    }
+                    labelTemplate = parsed;
+                    try {
+                        localStorage.setItem('labelTemplate', e.target.result);
+                        localStorage.setItem('labelTemplateName', file.name);
+                    } catch (err) { /* opslag vol of geblokkeerd: niet fataal */ }
+                    updateTemplateButton(file.name);
+                    const kantband = parsed.layers.filter(l => l.isCoating).length;
+                    showStatus(`Template "${file.name}" geladen: ${velden} tekstvelden, ` +
+                               `${parsed.layers.filter(l => l.isNoise).length} overgeslagen gebieden` +
+                               (kantband ? ` (waarvan ${kantband} kantbandregels)` : ''), 'success');
+                } catch (err) {
+                    console.error('Template parse error:', err);
+                    showStatus('Kon de template niet lezen: ' + err.message, 'error');
+                }
+                event.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+
+        function loadStoredTemplate() {
+            try {
+                const stored = localStorage.getItem('labelTemplate');
+                if (!stored) return;
+                labelTemplate = parseLaPTemplate(stored);
+                updateTemplateButton(localStorage.getItem('labelTemplateName') || 'template');
+            } catch (e) {
+                labelTemplate = null;
+            }
+        }
+
+        function clearTemplate() {
+            labelTemplate = null;
+            try {
+                localStorage.removeItem('labelTemplate');
+                localStorage.removeItem('labelTemplateName');
+            } catch (e) { /* niet fataal */ }
+            updateTemplateButton(null);
+            showStatus('Template verwijderd - OCR valt terug op losse zoektermen', 'info');
+        }
+
+        function updateTemplateButton(name) {
+            const btn = document.getElementById('templateBtn');
+            if (!btn) return;
+            if (name) {
+                btn.innerHTML = `📐 ${name.length > 18 ? name.slice(0, 16) + '…' : name} ✕`;
+                btn.title = `Template actief: ${name}. Klik om te verwijderen.`;
+                btn.style.background = '#FDF1EC';
+                btn.style.borderColor = '#F3C3AC';
+                btn.onclick = () => { if (confirm('Template verwijderen?')) clearTemplate(); };
+            } else {
+                btn.innerHTML = '📐 Template';
+                btn.title = 'Upload een AutoFit .LaP template voor veldherkenning';
+                btn.style.background = '';
+                btn.style.borderColor = '';
+                btn.onclick = () => document.getElementById('templateInput').click();
+            }
+        }
+
+        // Een veld dat niet op zijn eigen patroon past én waar de OCR weinig
+        // vertrouwen in had, is verminkt. Zulke waarden tonen we wel (je wilt
+        // zien dát er iets staat) maar houden we buiten de zoektermen, anders
+        // vervuilen ze het zoeken.
+        function veldOnleesbaar(v) {
+            // Past niet op zijn patroon én weinig vertrouwen
+            if (v.structuur === 'fout' && v.zekerheid < 70) return true;
+            // Of: de twee onafhankelijke lezingen waren het oneens én beide
+            // waren onzeker. Dan valt er niets zinnigs over te zeggen.
+            if (v.status === 'afwijkend' && v.zekerheid < 60) return true;
+            return false;
+        }
+
+        function betrouwbareWaarden(velden) {
+            return velden.filter(v => !veldOnleesbaar(v)).map(v => v.waarde);
+        }
+
+        // Rendert de bitmap van een etiket naar een canvas op willekeurige
+        // vergroting. Zelfde spiegeling als de preview, zodat coördinaten uit
+        // de ene render bruikbaar zijn in de andere.
+        function renderLabelToCanvas(label, scale) {
+            const z64Match = label.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+            const gfaMatch = label.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+            if (!z64Match || !gfaMatch) return null;
+
+            const bitmap = decompressGFA(z64Match[1]);
+            if (!bitmap) return null;
+
+            const bytesPerRow = parseInt(gfaMatch[3]);
+            const width = bytesPerRow * 8;
+            const height = Math.ceil(bitmap.length / bytesPerRow);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = width * scale;
+            canvas.height = height * scale;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'black';
+
+            for (let y = 0; y < height; y++) {
+                const fy = height - 1 - y;
+                for (let x = 0; x < width; x++) {
+                    const bi = y * bytesPerRow + (x >> 3);
+                    if (bi >= bitmap.length) break;
+                    if ((bitmap[bi] & (0x80 >> (x & 7))) !== 0) {
+                        ctx.fillRect((width - 1 - x) * scale, fy * scale, scale, scale);
+                    }
+                }
+            }
+            return canvas;
+        }
+
+        // ---------------------------------------------------------------
+        //  KRUISCONTROLE
+        //
+        //  De eerste OCR-doorgang leest het hele etiket en levert per regel
+        //  een omhullende rechthoek. Die rechthoek knippen we uit een veel
+        //  scherpere render en lezen we opnieuw. Twee onafhankelijke lezingen
+        //  van hetzelfde stukje beeld:
+        //    - gelijk        -> betrouwbaar
+        //    - verschillend  -> de lezing met de hoogste zekerheid wint en
+        //                       het veld wordt als onzeker gemarkeerd
+        //  Dit vangt verwisselingen als D18/D13 die je met één lezing niet ziet.
+        // ---------------------------------------------------------------
+
+        let kruiscontroleAan = true;
+
+        // =====================================================================
+        //  AUTOFIT PROJECTBESTAND (.Afd)
+        //
+        //  Het .Afd is een MFC-geserialiseerd bestand. Direct achter de kop
+        //  staat één groot UTF-16LE tekstblok met de volledige stuklijst; de
+        //  rest van het bestand is geometrie.
+        //
+        //  Elk stuk staat als "P[<nr>;" gevolgd door puntkomma-gescheiden
+        //  velden, daarna een reeks «PartExtNN»,«STRING»,«waarde» en tot slot
+        //  het CNC-programma.
+        //
+        //  Hiermee is de OCR overbodig: de referentie, het materiaal en de
+        //  afmetingen komen exact uit de bron in plaats van uit een gelezen
+        //  afbeelding. Dat scheelt niet alleen tijd maar ook fouten - de OCR
+        //  maakte van "mel18_00025cst" bijvoorbeeld "mel13_0U14/7/cst".
+        // =====================================================================
+
+        let afdParts = [];
+        let afdProject = '';
+
+        function afdTekstblokLezen(arrayBuffer) {
+            const dv = new DataView(arrayBuffer);
+
+            // Lengte staat als DWORD op offset 38, tekst begint op 42.
+            let lengte = 0, start = 42;
+            try { lengte = dv.getUint32(38, true); } catch (e) { lengte = 0; }
+
+            const aannemelijk = lengte > 1000 && (start + lengte * 2) <= arrayBuffer.byteLength;
+            if (!aannemelijk) {
+                // Terugval: het blok begint altijd met $CompShortDesc=
+                const kop = new TextDecoder('utf-16le').decode(
+                    new Uint8Array(arrayBuffer, 0, Math.min(4096, arrayBuffer.byteLength))
+                );
+                const i = kop.indexOf('$CompShortDesc=');
+                if (i < 0) throw new Error('Geen leesbaar tekstblok gevonden in dit .Afd bestand');
+                start = i * 2;
+                lengte = Math.floor((arrayBuffer.byteLength - start) / 2);
+            }
+
+            const bytes = new Uint8Array(arrayBuffer, start, Math.min(lengte * 2, arrayBuffer.byteLength - start));
+            return new TextDecoder('utf-16le').decode(bytes);
+        }
+
+        function parseAfd(arrayBuffer) {
+            const tekst = afdTekstblokLezen(arrayBuffer);
+            const stukken = [];
+            const re = /P\[(\d+);/g;
+            let m;
+
+            while ((m = re.exec(tekst)) !== null) {
+                const start = m.index + m[0].length;
+
+                // De kop loopt tot de eerste uitbreidingsvelden
+                const eindKop = tekst.indexOf('«', start); // «
+                if (eindKop < 0 || eindKop - start > 500) continue;
+
+                const v = tekst.substring(start, eindKop).split(';');
+                if (v.length < 9 || !v[0]) continue;
+
+                // Uitbreidingsvelden: «PartExtNN»,«STRING»,«waarde»
+                const ext = {};
+                const staartEind = tekst.indexOf('ATT(', eindKop);
+                const staart = tekst.substring(eindKop, staartEind > 0 ? staartEind : eindKop + 2000);
+                const reExt = /«(PartExt\d+)»,«[^»]*»,«([^»]*)»/g;
+                let e;
+                while ((e = reExt.exec(staart)) !== null) ext[e[1]] = e[2];
+
+                // CNC-programma staat achteraan als pad, bv. PZRiho_lockers/CK2BODS1.TCN
+                let cnc = '';
+                const cncMatch = staart.match(/([^;\/]+)\.TCN/i);
+                if (cncMatch) cnc = cncMatch[1];
+
+                stukken.push({
+                    nr: parseInt(m[1]),
+                    ref: v[0].trim(),
+                    oms: (v[1] || '').trim(),
+                    mat: (v[3] || '').trim(),
+                    L: parseFloat(v[4]) || 0,
+                    W: parseFloat(v[5]) || 0,
+                    coatedL: parseFloat(v[6]) || 0,
+                    coatedW: parseFloat(v[7]) || 0,
+                    T: parseFloat(v[8]) || 0,
+                    kantbandAchter: (v[15] || '').trim(),
+                    kantbandVoor: (v[16] || '').trim(),
+                    ext: ext,
+                    cnc: cnc
+                });
+            }
+
+            return stukken;
+        }
+
+        // Waarde van een template-plaatshouder voor een stuk uit het .Afd
+        function afdVeldWaarde(stuk, naam) {
+            const getal = n => (Math.round(n * 10) / 10).toFixed(1);
+            switch (naam) {
+                case 'PartRef': return stuk.ref;
+                case 'PartRem': return stuk.oms;
+                case 'PartMat': return stuk.mat;
+                case 'PartL': return getal(stuk.L);
+                case 'PartW': return getal(stuk.W);
+                case 'PartT': return getal(stuk.T);
+                case 'PartCoatedL': return getal(stuk.coatedL);
+                case 'PartCoatedW': return getal(stuk.coatedW);
+                case 'PartCnc': return stuk.cnc;
+                case 'PartSecondCnc': return '';
+                default:
+                    if (/^PartExt\d+$/.test(naam)) return stuk.ext[naam] || '';
+                    if (/^PartCoatingName/.test(naam)) return '';
+                    return '';
+            }
+        }
+
+        // Vervangt de plaatshouders in een template-regel door echte waarden
+        function afdTekstInvullen(sjabloon, stuk) {
+            return sjabloon.replace(/\[([A-Za-z][A-Za-z0-9]*)(?:\|[^\]]*)?\]/g,
+                (_, naam) => afdVeldWaarde(stuk, naam));
+        }
+
+        // Evalueert de voorwaarde van een laag, bv.
+        //   [TEXTLENGTH '[PartCnc]']>1
+        // Zonder voorwaarde wordt de laag altijd getekend. Wordt de voorwaarde
+        // niet herkend, dan tekenen we hem óók - liever een laag te veel dan
+        // stilzwijgend gegevens weglaten.
+        function laagVoorwaardeGeldt(laag, stuk) {
+            const c = laag.conditie;
+            if (!c) return true;
+
+            const m = c.match(/^\[TEXTLENGTH\s+'(.*)'\]\s*(>=|<=|>|<|=)\s*(\d+)$/i);
+            if (!m) {
+                console.warn('Onbekende voorwaarde op laag', laag.n, ':', c);
+                return true;
+            }
+
+            const waarde = afdTekstInvullen(m[1], stuk);
+            const lengte = waarde.trim().length;
+            const grens = parseInt(m[3]);
+            switch (m[2]) {
+                case '>':  return lengte > grens;
+                case '<':  return lengte < grens;
+                case '>=': return lengte >= grens;
+                case '<=': return lengte <= grens;
+                case '=':  return lengte === grens;
+            }
+            return true;
+        }
+
+        // Tekent een QR-code als SVG-blokjes.
+        //
+        // De inhoud wordt in byte-modus gecodeerd; de standaardomzetting van
+        // deze bibliotheek is één byte per teken, oftewel ISO-8859-1, precies
+        // zoals de etiketten het doen.
+        //
+        // Modulegrootte en foutcorrectie komen uit de barcodespec van de laag:
+        // veld [1] is de modulebreedte in tienden van millimeters, veld [9]
+        // het foutcorrectieniveau.
+        const QR_CORRECTIE = { 0: 'L', 1: 'M', 2: 'Q', 3: 'H' };
+
+        // Puntgrootte van de printer in mm (203 dpi is de standaard bij Zebra).
+        // Blijkt de QR op een proefafdruk te groot of te klein, dan is dit de
+        // enige knop die verzet hoeft te worden.
+        const QR_PUNT_MM = 25.4 / 203;
+
+        function tekenQr(tekst, laag, x, y) {
+            if (typeof qrcode === 'undefined') {
+                return `<text x="${x}" y="${y}" font-size="12" fill="#999" dominant-baseline="hanging">[QR: ${tekst}]</text>`;
+            }
+            try {
+                const niveau = QR_CORRECTIE[laag.barcode && laag.barcode[9]] || 'M';
+                const qr = qrcode(0, niveau);           // 0 = kleinste passende versie
+                qr.addData(tekst, 'Byte');
+                qr.make();
+
+                const n = qr.getModuleCount();
+
+                // Modulegrootte: veld [1] van de barcodespec is de vergroting
+                // in printerpunten. Bij 203 dpi is één punt 25,4/203 mm, en de
+                // template rekent in tienden van millimeters.
+                //
+                // LET OP: dit is de gangbare uitleg van dat veld, maar niet
+                // geverifieerd tegen een echt etiket - de beschikbare PRN
+                // bevat geen enkele QR-code. Eén proefafdruk scannen bevestigt
+                // of de maat klopt; QR_PUNT_MM past hem zo nodig aan.
+                const punten = (laag.barcode && laag.barcode[1] > 0) ? laag.barcode[1] : 1;
+                const mod = punten * QR_PUNT_MM * 10;
+
+                let blokjes = '';
+                for (let r = 0; r < n; r++) {
+                    let c = 0;
+                    while (c < n) {
+                        if (!qr.isDark(r, c)) { c++; continue; }
+                        // Aaneengesloten donkere modules samenvoegen tot één
+                        // rechthoek: scheelt fors in de omvang van de SVG.
+                        let breedte = 1;
+                        while (c + breedte < n && qr.isDark(r, c + breedte)) breedte++;
+                        blokjes += `<rect x="${(x + c * mod).toFixed(2)}" y="${(y + r * mod).toFixed(2)}" width="${(breedte * mod).toFixed(2)}" height="${mod.toFixed(2)}"/>`;
+                        c += breedte;
+                    }
+                }
+                return `<g fill="black" shape-rendering="crispEdges">${blokjes}</g>`;
+            } catch (e) {
+                console.error('QR genereren mislukt:', e);
+                return `<text x="${x}" y="${y}" font-size="12" fill="#c00" dominant-baseline="hanging">[QR mislukt]</text>`;
+            }
+        }
+
+        // Bouwt het etiket op uit de template-lagen. Coördinaten uit de .LaP
+        // zijn in tienden van millimeters op een vlak van 1000 x 600, wat
+        // rechtstreeks als SVG-viewBox dienst doet.
+        function genereerEtiketSvg(stuk, opties) {
+            if (!labelTemplate) return '';
+            const o = opties || {};
+            const B = labelTemplate.pageWidth, H = labelTemplate.pageHeight;
+            let inhoud = '';
+
+            labelTemplate.layers.slice().sort((a, b) => a.n - b.n).forEach(laag => {
+                const x = laag.posX, y = laag.posY;
+
+                // Voorwaarde van de laag respecteren: een QR voor een stuk
+                // zonder CNC-programma hoort er niet te staan.
+                if (!laagVoorwaardeGeldt(laag, stuk)) return;
+
+                // Kader
+                if (laag.type === 3) {
+                    inhoud += `<rect x="${x}" y="${y}" width="${laag.rectW || (B - 2 * x)}" height="${laag.rectH || (H - 2 * y)}" fill="none" stroke="black" stroke-width="1.5"/>`;
+                    return;
+                }
+
+                // Tekening van het stuk: als eenvoudige omtrek weergeven
+                if (laag.type === 2) {
+                    if (o.tekening === false) return;
+                    const bw = laag.rectW || 300, bh = laag.rectH || 200;
+                    // Verhouding van het echte stuk binnen het kader passen
+                    const v = stuk.W > 0 ? stuk.L / stuk.W : 1;
+                    let tw = bw, th = bw / v;
+                    if (th > bh) { th = bh; tw = bh * v; }
+                    inhoud += `<rect x="${x + (bw - tw) / 2}" y="${y + (bh - th) / 2}" width="${tw}" height="${th}" fill="none" stroke="black" stroke-width="1.2"/>`;
+                    return;
+                }
+
+                const tekst = afdTekstInvullen(laag.text, stuk).trim();
+                if (!tekst) return;
+
+                if (laag.type === 1) {
+                    if (o.barcodes === false) return;
+                    inhoud += tekenQr(tekst, laag, x, y);
+                    return;
+                }
+
+                // Tekstlaag
+                const grootte = Math.abs(parseFloat((laag.font || '').split(',')[0]) || 19);
+                const gewicht = (parseInt((laag.font || '').split(',')[4]) || 400) >= 700 ? 'bold' : 'normal';
+                const hoek = -laag.escapement / 10; // .LaP telt tegen de klok in 0,1°
+                const draai = hoek ? ` transform="rotate(${hoek}, ${x}, ${y})"` : '';
+
+                inhoud += `<text x="${x}" y="${y}" font-family="Arial, Helvetica, sans-serif"
+                                 font-size="${grootte}" font-weight="${gewicht}"
+                                 dominant-baseline="hanging" fill="black"${draai}>${
+                                 tekst.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</text>`;
+            });
+
+            return `<svg viewBox="0 0 ${B} ${H}" xmlns="http://www.w3.org/2000/svg"
+                         style="background:white;${o.stijl || ''}">
+                        <rect width="${B}" height="${H}" fill="white"/>
+                        ${inhoud}
+                    </svg>`;
+        }
+
+        // =====================================================================
+        //  OCR-WERKERS
+        //
+        //  Tesseract.recognize() bouwt bij élke aanroep een nieuwe worker op en
+        //  breekt hem daarna weer af. Gemeten kost dat 1584 ms per etiket; met
+        //  drie blijvende workers naast elkaar is dat 450 ms - ruim drie keer
+        //  sneller. Bij honderden etiketten scheelt dat kwartieren.
+        // =====================================================================
+
+        const OCR_WERKERS = 3;
+        let ocrWerkers = null;
+        let ocrWerkersBezig = null;
+        let ocrAfgebroken = false;
+
+        async function ocrWerkersStarten() {
+            if (ocrWerkers) return ocrWerkers;
+            if (!ocrWerkersBezig) {
+                ocrWerkersBezig = Promise.all(
+                    Array.from({ length: OCR_WERKERS }, () => Tesseract.createWorker('eng'))
+                ).then(ws => { ocrWerkers = ws; return ws; });
+            }
+            return ocrWerkersBezig;
+        }
+
+        // Voert één herkenning uit: via een meegegeven worker als die er is,
+        // anders via de losse aanroep (zodat alles blijft werken wanneer de
+        // workers nog niet gestart zijn).
+        async function ocrHerken(afbeelding, werker) {
+            if (werker) return werker.recognize(afbeelding);
+            return Tesseract.recognize(afbeelding, 'eng', { logger: () => {} });
+        }
+
+        // Verdeelt taken over de workers. Elke taak krijgt een worker mee.
+        async function ocrTakenUitvoeren(taken, opVoortgang) {
+            const ws = await ocrWerkersStarten();
+            let volgende = 0, gedaan = 0;
+
+            await Promise.all(ws.map(async werker => {
+                while (true) {
+                    if (ocrAfgebroken) break;
+                    const i = volgende++;
+                    if (i >= taken.length) break;
+                    try {
+                        await taken[i](werker);
+                    } catch (e) {
+                        console.error('OCR-taak mislukt:', e);
+                    }
+                    gedaan++;
+                    if (opVoortgang) opVoortgang(gedaan, taken.length);
+                }
+            }));
+
+            return gedaan;
+        }
+
+        function normaliseerVoorVergelijk(s) {
+            return String(s || '').replace(/\s+/g, ' ').trim();
+        }
+
+        // ---------------------------------------------------------------
+        //  STRUCTUURCONTROLE
+        //
+        //  De template zegt niet alleen wélke velden er staan, maar ook hoe ze
+        //  zijn opgebouwd. "[PartL] x [PartW] x [PartT] ([PartCoatedL] x ...)"
+        //  heeft vaste scheidingstekens. Past de gelezen tekst niet op dat
+        //  patroon, dan is ze verminkt - ook als Tesseract er zelf vertrouwen
+        //  in had. Dat vangt regels als "/982.0/ / 0" die als "1982.07 10"
+        //  worden gelezen: de schuine strepen zijn dan cijfers geworden en het
+        //  patroon klopt niet meer.
+        // ---------------------------------------------------------------
+
+        function escapeRegExp(s) {
+            return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        // OCR verwisselt ronde, vierkante en accoladehaakjes voortdurend:
+        // "(1844.0 x 80.0)" komt terug als "{1844.0 x 80.0)". Voor de
+        // structuurcontrole tellen ze als hetzelfde teken.
+        function normaliseerHaakjes(s) {
+            return String(s || '').replace(/[\[{]/g, '(').replace(/[\]}]/g, ')');
+        }
+
+        // Bouwt uit de template-tekst van een laag een patroon met
+        // vanggroepen, plus de namen van de velden in volgorde.
+        function veldPatroon(layerText) {
+            const re = /\[([A-Za-z][A-Za-z0-9]*)(?:\|[^\]]*)?\]/g;
+            let laatste = 0, m, patroon = '';
+            const namen = [];
+            while ((m = re.exec(layerText)) !== null) {
+                patroon += escapeRegExp(layerText.slice(laatste, m.index)).replace(/\\?\s+/g, '\\s*');
+                patroon += '(.*?)';
+                namen.push(m[1]);
+                laatste = m.index + m[0].length;
+            }
+            patroon += escapeRegExp(layerText.slice(laatste)).replace(/\\?\s+/g, '\\s*');
+            try {
+                return { regex: new RegExp('^\\s*' + patroon + '\\s*$'), namen };
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Controleert elk veld tegen het patroon van zijn laag en verzamelt
+        // onderweg de losse veldwaarden (bruikbaar om elders te vergelijken).
+        function controleerStructuur(velden) {
+            const tpl = labelTemplate;
+            if (!tpl) return;
+
+            velden.forEach(veld => {
+                const laag = tpl.layers.find(l => l.n === veld.laag);
+                if (!laag || !laag.text) return;
+
+                const pat = veldPatroon(laag.text);
+                if (!pat || pat.namen.length === 0) return;
+
+                // Een patroon zonder vaste scheidingstekens valt altijd samen
+                // met de hele tekst; daar valt niets aan te controleren.
+                const heeftScheiding = /[^\s]/.test(
+                    laag.text.replace(/\[[^\]]*\]/g, '')
+                );
+                if (!heeftScheiding) { veld.structuur = 'nvt'; return; }
+
+                const m = normaliseerHaakjes(veld.waarde).match(pat.regex);
+                if (m) {
+                    veld.structuur = 'ok';
+                    veld.onderdelen = {};
+                    pat.namen.forEach((naam, i) => {
+                        veld.onderdelen[naam] = (m[i + 1] || '').trim();
+                    });
+                } else {
+                    veld.structuur = 'fout';
+                    veld.verwachtPatroon = laag.text;
+                }
+            });
+        }
+
+        async function kruiscontroleerVelden(label, velden, basisCanvas, werker) {
+            // BELANGRIJK: de uitsnede wordt op dezelfde schaal gelezen als het
+            // hele etiket. Opschalen (blokkerig of glad) maakte de herkenning
+            // aantoonbaar slechter - D18_WBP_sokkel werd dan D18_WBP_sokksl.
+            // De winst komt puur uit het wegnemen van omringende tekst.
+            for (const veld of velden) {
+                if (!veld.bbox) continue;
+                try {
+                    const marge = 12;
+                    const x = Math.max(0, Math.round(veld.bbox.x0 - marge));
+                    const y = Math.max(0, Math.round(veld.bbox.y0 - marge));
+                    const w = Math.min(basisCanvas.width - x, Math.round((veld.bbox.x1 - veld.bbox.x0) + marge * 2));
+                    const h = Math.min(basisCanvas.height - y, Math.round((veld.bbox.y1 - veld.bbox.y0) + marge * 2));
+                    if (w < 8 || h < 8) continue;
+
+                    const uitsnede = document.createElement('canvas');
+                    uitsnede.width = w; uitsnede.height = h;
+                    const uctx = uitsnede.getContext('2d');
+                    uctx.imageSmoothingEnabled = false;
+                    uctx.fillStyle = 'white'; uctx.fillRect(0, 0, w, h);
+                    uctx.drawImage(basisCanvas, x, y, w, h, 0, 0, w, h);
+
+                    const res = await ocrHerken(uitsnede.toDataURL('image/png'), werker);
+                    const tweede = normaliseerVoorVergelijk(res.data.text);
+                    const zekerheid2 = Math.round(res.data.confidence);
+
+                    veld.tweedeLezing = tweede;
+                    veld.zekerheid2 = zekerheid2;
+
+                    if (!tweede) { veld.status = 'onbevestigd'; continue; }
+
+                    const eerste = normaliseerVoorVergelijk(veld.waarde);
+
+                    if (eerste === tweede) {
+                        veld.status = 'bevestigd';
+                        veld.zekerheid = Math.max(veld.zekerheid, zekerheid2);
+                        continue;
+                    }
+
+                    // Verschillen ze alleen in underscores/spaties? Dan is het
+                    // dezelfde tekst en wint de lezing mét underscores: de OCR
+                    // verliest die streepjes eerder dan dat hij ze verzint.
+                    const kaal = s => s.replace(/[_\s]/g, '');
+                    if (kaal(eerste) === kaal(tweede)) {
+                        const telEerste = (eerste.match(/_/g) || []).length;
+                        const telTweede = (tweede.match(/_/g) || []).length;
+                        veld.status = 'bevestigd';
+                        if (telTweede > telEerste) veld.waarde = tweede;
+                        veld.zekerheid = Math.max(veld.zekerheid, zekerheid2);
+                        continue;
+                    }
+
+                    veld.status = 'afwijkend';
+                    // De tweede lezing wint alleen als ze duidelijk zekerder
+                    // is; anders houden we de eerste.
+                    if (zekerheid2 > veld.zekerheid + 15) {
+                        veld.eersteLezing = veld.waarde;
+                        veld.waarde = tweede;
+                        veld.zekerheid = zekerheid2;
+                    }
+                } catch (e) {
+                    console.error('Kruiscontrole mislukt voor veld', veld.naam, e);
+                }
+            }
+            return velden;
+        }
+
+        // Vult het vak onder de etiketvoorbeeld met óf een veldtabel (template
+        // geladen) óf losse zoektermen (geen template).
+        function renderLabelFields(labelId) {
+            const doel = document.getElementById(`searchTerms-${labelId}`);
+            if (!doel) return;
+
+            const label = labels.find(l => l.id === labelId);
+            if (!label) return;
+
+            const laden = document.getElementById(`ocr-loading-${labelId}`);
+            if (laden) laden.remove();
+
+            // Veldweergave
+            if (label.fields && label.fields.length) {
+                doel.style.display = 'block';
+                doel.innerHTML = label.fields.map(v => {
+                    // Verminkt: structuur klopt niet en weinig vertrouwen
+                    if (veldOnleesbaar(v)) {
+                        return `
+                            <div style="display: flex; gap: 6px; padding: 2px 0; align-items: baseline; opacity: 0.55;">
+                                <div style="flex: 0 0 88px; color: #77736C; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px;">${v.naam}</div>
+                                <div style="flex: 1; font-size: 11px; color: #77736C; font-style: italic;"
+                                     title="Gelezen als &quot;${v.waarde}&quot;, maar dat past niet op het patroon ${v.verwachtPatroon || ''}">
+                                    onleesbaar
+                                </div>
+                            </div>
+                        `;
+                    }
+                    let merk = '', titel = '';
+                    if (v.status === 'bevestigd') {
+                        merk = '<span style="color:#16a34a;">✓</span>';
+                        titel = 'Twee onafhankelijke lezingen kwamen overeen';
+                    } else if (v.status === 'afwijkend') {
+                        merk = '<span style="color:#C08A2E;">⚠</span>';
+                        titel = 'De twee lezingen verschilden' +
+                                (v.eersteLezing ? ` - eerste lezing was "${v.eersteLezing}"` :
+                                 (v.tweedeLezing ? ` - tweede lezing was "${v.tweedeLezing}"` : ''));
+                    } else if (v.zekerheid < 60) {
+                        merk = '<span style="color:#C08A2E;">⚠</span>';
+                        titel = 'Lage OCR-zekerheid';
+                    }
+                    return `
+                        <div style="display: flex; gap: 6px; padding: 2px 0; align-items: baseline;">
+                            <div style="flex: 0 0 88px; color: #77736C; font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px;">${v.naam}</div>
+                            <div style="flex: 1; font-size: 11px; color: #343432; word-break: break-word;">
+                                ${v.waarde} <span title="${titel}">${merk}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                return;
+            }
+
+            // Terugval: losse termen
+            if (label.extractedTerms && label.extractedTerms.length) {
+                doel.style.display = 'flex';
+                doel.innerHTML = label.extractedTerms.slice(0, 8).map(t =>
+                    `<span style="background: white; border: 1px solid #F3C3AC; border-radius: 4px; padding: 2px 5px; font-size: 10px;">${t}</span>`
+                ).join('');
+            }
+        }
+
+        function togglePlateFilter(plateId) {
+            const wasSelected = selectedPlates.has(plateId);
+            
+            if (wasSelected) {
+                selectedPlates.delete(plateId);
+            } else {
+                selectedPlates.add(plateId);
+            }
+
+            // Also select/deselect all labels for this plate
+            const plate = plateCodes.find(p => p.id === plateId);
+            if (plate) {
+                const plateLabels = labels.filter(l => l.plateGroup === plate.plateCode);
+                plateLabels.forEach(label => {
+                    if (wasSelected) {
+                        selected.delete(label.id);
+                    } else {
+                        selected.add(label.id);
+                    }
+                });
+            }
+
+            updateUI();
+            updateStats();
+            updatePrintButton();
+        }
+
+        function updateUI() {
+            const emptyState = document.getElementById('emptyState');
+            const labelGroups = document.getElementById('labelGroups');
+            const labelsGrid = document.getElementById('labelsGrid');
+
+            if (labels.length === 0) {
+                // Oorspronkelijke boodschap herstellen (kan overschreven zijn
+                // door een zoekopdracht zonder resultaat)
+                emptyState.innerHTML = `
+                    <p><i class="ti ti-inbox"></i></p>
+                    <p style="margin-top: 16px;">Laad een ZPL-bestand om etiketten te zien</p>
+                `;
+                emptyState.style.display = 'block';
+                labelGroups.style.display = 'none';
+                labelsGrid.style.display = 'none';
+            } else {
+                // Plaatselectie + zoekfilter gecombineerd
+                const filteredLabels = getVisibleLabels();
+
+                // Niets gevonden: toon een lege staat i.p.v. een leeg scherm
+                if (filteredLabels.length === 0) {
+                    emptyState.style.display = 'block';
+                    emptyState.innerHTML = `
+                        <p style="margin: 0 0 8px 0; font-size: 15px;">Geen etiketten gevonden voor "${searchQuery}"</p>
+                        <p style="margin: 0; font-size: 13px;">Let op: doorzoekbare tekst ontstaat pas nadat je OCR op een plaat hebt uitgevoerd (🔍).</p>
+                    `;
+                    labelGroups.innerHTML = ''; // geen verouderde kaarten laten staan
+                    labelGroups.style.display = 'none';
+                    labelsGrid.style.display = 'none';
+                    updateSearchInfo(0);
+                    updateStats();
+                    updatePreview();
+                    updatePrintButton();
+                    return;
+                }
+
+                emptyState.style.display = 'none';
+                updateSearchInfo(filteredLabels.length);
+
+                // Group labels by plate
+                const groups = {};
+                filteredLabels.forEach(label => {
+                    const group = label.plateGroup || 'Overig';
+                    if (!groups[group]) {
+                        groups[group] = [];
+                    }
+                    groups[group].push(label);
+                });
+
+                // Render grouped labels - sort numerically
+                labelGroups.innerHTML = Object.keys(groups).sort((a, b) => {
+                    // Extract numbers from group names (e.g. "Plaat 1" -> 1)
+                    const numA = parseInt(a.match(/\d+/)?.[0] || 999);
+                    const numB = parseInt(b.match(/\d+/)?.[0] || 999);
+                    return numA - numB;
+                }).map(group => {
+                    const groupLabels = groups[group];
+                    const groupSelected = groupLabels.every(l => selected.has(l.id));
+                    const groupPartial = groupLabels.some(l => selected.has(l.id)) && !groupSelected;
+
+                    return `
+                        <div class="plate-group">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+                                <input type="checkbox"
+                                       id="plate-${group.replace(/[^a-z0-9]/gi, '')}"
+                                       ${groupSelected ? 'checked' : ''}
+                                       ${groupPartial ? 'indeterminate' : ''}
+                                       onchange="if(this.checked) selectAllInPlate('${group}'); else deselectAllInPlate('${group}')"
+                                       style="width: 18px; height: 18px; cursor: pointer;">
+                                <h3 style="margin: 0; padding: 0; border-bottom: 2px solid #EA6431; flex: 1; padding-bottom: 10px;">
+                                    ${group} (${groupLabels.length} etiketten)
+                                </h3>
+                            </div>
+                            <div class="labels-grid">
+                                ${groupLabels.map(label => {
+                                    return `
+                                    <div class="label-card ${selected.has(label.id) ? 'selected' : ''}"
+                                         onclick="showDetailPreview(${label.id})"
+                                         style="cursor: pointer;">
+                                        <input type="checkbox"
+                                               ${selected.has(label.id) ? 'checked' : ''}
+                                               onchange="event.stopPropagation(); toggleLabel(${label.id})"
+                                               style="cursor: pointer;">
+                                        <div class="label-info">
+                                            <div class="label-number">Etiket #${label.id}</div>
+                                            <div class="label-preview">
+                                                ${kaartTekst(label)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                                }).join('')}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                labelGroups.style.display = 'block';
+                labelsGrid.style.display = 'none';
+            }
+
+            updateStats();
+            updatePreview();
+            updatePrintButton();
+            updatePlateCodesUI();
+        }
+        
+        function toggleLabel(id) {
+            if (selected.has(id)) {
+                selected.delete(id);
+            } else {
+                selected.add(id);
+            }
+
+            // Direct DOM update instead of full updateUI()
+            const label = labels.find(l => l.id === id);
+            if (!label) return;
+
+            // Find and update the label card
+            const cards = document.querySelectorAll('.label-card');
+            cards.forEach(card => {
+                const cardNum = card.textContent.match(/Etiket #(\d+)/)?.[1];
+                if (cardNum && parseInt(cardNum) === id) {
+                    const checkbox = card.querySelector('input[type="checkbox"]');
+                    if (checkbox) {
+                        checkbox.checked = selected.has(id);
+                        card.classList.toggle('selected', selected.has(id));
+                    }
+                }
+            });
+
+            // Update stats and button (lightweight operations)
+            updateStats();
+            updatePreview();
+            updatePrintButton();
+        }
+
+        async function performOCR(labelId, width, height, pathD) {
+            try {
+                // Create canvas and render SVG
+                const canvas = document.createElement('canvas');
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext('2d');
+
+                // Fill background
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, width, height);
+
+                // Draw the path
+                ctx.fillStyle = 'black';
+                ctx.strokeStyle = 'black';
+
+                // Parse and render path
+                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
+                for (const part of pathParts) {
+                    const match = part.match(/M(\d+),(\d+)/);
+                    if (match) {
+                        const x = parseInt(match[1]);
+                        const y = parseInt(match[2]);
+                        ctx.fillRect(x, y, 1, 1);
+                    }
+                }
+
+                const imageData = canvas.toDataURL('image/png');
+                console.log('Canvas ready for OCR');
+
+                // Run OCR with English and error correction
+                if (typeof Tesseract !== 'undefined') {
+                    const result = await Tesseract.recognize(imageData, 'eng', {
+                        logger: () => {}
+                    });
+                    let text = result.data.text;
+
+                    // Post-process common OCR errors
+                    text = text.replace(/Z0/g, '25');
+                    text = text.replace(/Zo/g, '25');
+                    text = text.replace(/O(?=\d)/g, '0');
+                    text = text.replace(/\bl\b/g, '1');
+                    text = text.replace(/\bO\b/g, '0');
+                    text = text.replace(/S(?=\d)/g, '5');
+                    text = text.replace(/B(?=\d)/g, '8');
+
+                    const label = labels.find(l => l.id === labelId);
+                    if (label) {
+                        label.rawTextRaw = text;
+
+                        // Met template: velden herkennen en ruis weglaten
+                        let gelukt = false;
+                        if (labelTemplate && Array.isArray(result.data.lines)) {
+                            const { velden, ruis } = mapLinesToTemplate(
+                                result.data.lines, canvas.width, canvas.height
+                            );
+                            if (velden.length > 0) {
+                                if (kruiscontroleAan) {
+                                    await kruiscontroleerVelden(label, velden, canvas);
+                                }
+                                controleerStructuur(velden);
+                                label.fields = velden;
+                                label.extractedTerms = betrouwbareWaarden(velden);
+                                label.rawText = betrouwbareWaarden(velden).join('\n');
+                                label.discardedNoise = ruis;
+                                gelukt = true;
+                            }
+                        }
+
+                        if (!gelukt) {
+                            const terms = text.split(/[\s\n,\.()]+/)
+                                .filter(t => t.length > 1)
+                                .filter(t => !/^\d+$/.test(t))
+                                .map(t => t.trim())
+                                .filter((t, i, arr) => arr.indexOf(t) === i);
+                            label.fields = null;
+                            label.extractedTerms = terms;
+                            label.rawText = text;
+                        }
+                    }
+
+                    renderLabelFields(labelId);
+                } else {
+                    console.log('Tesseract not available yet');
+                    const loadingSpan = document.getElementById(`ocr-loading-${labelId}`);
+                    if (loadingSpan) loadingSpan.textContent = 'Tesseract niet geladen';
+                }
+            } catch (error) {
+                console.error('OCR error:', error);
+                const loadingSpan = document.getElementById(`ocr-loading-${labelId}`);
+                if (loadingSpan) loadingSpan.textContent = 'OCR fout';
+            }
+        }
+
+        async function extractPlateCodesOCR() {
+            try {
+                if (plateCodes.length === 0) {
+                    showStatus('Geen plaatcodes gevonden in bestand', 'error');
+                    return;
+                }
+
+                // Show progress panel, hide plate codes panel
+                document.getElementById('plateCodesPanel').style.display = 'none';
+                ocrAfgebroken = false;
+                toonOcrVoortgang('Plaatcodes inlezen', 0, plateCodes.length);
+
+                showStatus(`⏳ ${plateCodes.length} plaatcodes aan het extraheren...`, 'info');
+
+                // Over de workers verdelen in plaats van vaste groepjes van drie
+                const taken = plateCodes.map(plate => (werker) => performPlateOCR(plate, werker));
+                await ocrTakenUitvoeren(taken, (n, totaal) => {
+                    toonOcrVoortgang('Plaatcodes inlezen', n, totaal);
+                });
+
+                // Group plates by material code and renumber
+                renumberPlatesByMaterial();
+
+                // Hide progress panel, show plate codes panel
+                document.getElementById('ocrProgressPanel').style.display = 'none';
+                document.getElementById('plateCodesPanel').style.display = 'block';
+                
+                updatePlateCodesUI();
+                showStatus(`✓ ${plateCodes.length} plaatcodes geëxtraheerd!`, 'success');
+            } catch (error) {
+                console.error('Error in extractPlateCodesOCR:', error);
+                // Still show the plate codes even if OCR fails
+                document.getElementById('ocrProgressPanel').style.display = 'none';
+                document.getElementById('plateCodesPanel').style.display = 'block';
+                renumberPlatesByMaterial();
+                updatePlateCodesUI();
+                showStatus('Plaatcodes geladen (OCR had fouten)', 'info');
+            }
+        }
+
+        function renumberPlatesByMaterial() {
+            // Group plates by their material code
+            const materialGroups = {};
+            const materialOrder = [];
+
+            plateCodes.forEach(plate => {
+                const material = plate.materialCode || plate.plateCode; // Use extracted material code
+                if (!materialGroups[material]) {
+                    materialGroups[material] = [];
+                    materialOrder.push(material);
+                }
+                materialGroups[material].push(plate);
+            });
+
+            // Renumber each plate and update labels (batch updates)
+            materialOrder.forEach(material => {
+                const plates = materialGroups[material];
+                plates.forEach((plate, index) => {
+                    const oldName = plate.plateCode;
+                    const newName = `${material} Plaat ${index + 1}`;
+                    plate.plateCode = newName;
+
+                    // Update all labels at once
+                    labels.forEach(label => {
+                        if (label.plateGroup === oldName) {
+                            label.plateGroup = newName;
+                        }
+                    });
+                });
+            });
+
+            // Single UI update at the end
+            updateUI();
+        }
+
+        // Leidt de materiaalcode af uit de OCR-tekst van een plaatetiket.
+        //
+        // Werkt op REGELS, niet op losse woorden: op het etiket staat de code
+        // alleen op de eerste tekstregel. Tesseract leest de dunne liggende
+        // streep van een underscore regelmatig als een spatie ("D9_MDF_groen"
+        // -> "D9 MDF groen"); door de hele regel te nemen en spaties terug te
+        // vertalen naar underscores blijft de code heel.
+        function deriveMaterialCode(text) {
+            const lines = String(text || '')
+                .split(/\r?\n/)
+                .map(l => l.trim())
+                .filter(l => l.length > 0);
+
+            for (const line of lines) {
+                // Afmetingsregels overslaan: "2440.0 x 1220.0 x 18.0"
+                if (/^[\d\s.,x×()\[\]-]+$/i.test(line)) continue;
+                // Moet minstens één letter bevatten
+                if (!/[A-Za-z]/.test(line)) continue;
+
+                let code = line
+                    .replace(/\s+/g, '_')                  // spatie = verloren underscore
+                    .replace(/[^A-Za-z0-9_\-\/]/g, '')     // ruis weghalen
+                    .replace(/_{2,}/g, '_')                // dubbele underscores
+                    .replace(/^[_\-]+|[_\-]+$/g, '');      // randen opschonen
+
+                if (code.length >= 2 && code.length <= 50) return code;
+            }
+            return null;
+        }
+
+        async function performPlateOCR(plate, werker) {
+            try {
+                const z64Match = plate.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+                if (!z64Match) return;
+
+                const gfaMatch = plate.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+                if (!gfaMatch) return;
+
+                const bitmap = decompressGFA(z64Match[1]);
+                if (!bitmap) return;
+
+                const bytesPerRow = parseInt(gfaMatch[3]);
+                const width = bytesPerRow * 8;
+                const height = Math.ceil(bitmap.length / bytesPerRow);
+
+                let pathD = '';
+                for (let y = 0; y < height; y++) {
+                    const flippedY = height - 1 - y;
+                    for (let x = 0; x < width; x += 8) {
+                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+                        if (byteIndex >= bitmap.length) break;
+
+                        const byte = bitmap[byteIndex];
+                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
+                            if ((byte & (0x80 >> bit)) !== 0) {
+                                const flippedX = width - 1 - (x + bit);
+                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
+                            }
+                        }
+                    }
+                }
+
+                // Render at 2x scale for better OCR accuracy
+                const scale = 2;
+                const canvas = document.createElement('canvas');
+                canvas.width = width * scale;
+                canvas.height = height * scale;
+                const ctx = canvas.getContext('2d');
+
+                // White background
+                ctx.fillStyle = 'white';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                // Black pixels (scaled)
+                ctx.fillStyle = 'black';
+                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
+                for (const part of pathParts) {
+                    const match = part.match(/M(\d+),(\d+)/);
+                    if (match) {
+                        const x = parseInt(match[1]) * scale;
+                        const y = parseInt(match[2]) * scale;
+                        ctx.fillRect(x, y, scale, scale);
+                    }
+                }
+
+                const imageData = canvas.toDataURL('image/png', 0.95);
+
+                if (typeof Tesseract !== 'undefined') {
+                    const result = await ocrHerken(imageData, werker);
+                    let text = result.data.text;
+
+                    // Post-process common OCR errors
+                    text = text.replace(/Z0/g, '25');  // Z0 -> 25
+                    text = text.replace(/Zo/g, '25');  // Zo -> 25
+                    text = text.replace(/O(?=\d)/g, '0');  // O followed by digit -> 0
+                    text = text.replace(/\bl\b/g, '1');  // l alone -> 1
+                    text = text.replace(/\bO\b/g, '0');  // O alone -> 0
+                    text = text.replace(/S(?=\d)/g, '5');  // S followed by digit -> 5
+                    text = text.replace(/B(?=\d)/g, '8');  // B followed by digit -> 8
+
+                    // Split on whitespace and commas/dots only (keep underscores and hyphens)
+                    const terms = text.split(/[\s\n,\.()]+/)
+                        .filter(t => t.length > 1)
+                        .filter(t => !/^\d+$/.test(t))
+                        .map(t => t.trim())
+                        .filter((t, i, arr) => arr.indexOf(t) === i);
+
+                    plate.extractedTerms = terms;
+                    plate.rawText = text;
+
+                    // Materiaalcode uit de eerste tekstregel halen, niet uit
+                    // losse woorden: op een plaatetiket staat de code altijd
+                    // alleen op de eerste regel.
+                    const derived = deriveMaterialCode(text);
+                    if (derived) {
+                        plate.materialCode = derived;
+                    }
+                }
+            } catch (error) {
+                console.error('Plate OCR error:', error);
+            }
+        }
+
+        function showDetailPreview(labelId) {
+            const label = labels.find(l => l.id === labelId);
+            if (!label) {
+                console.log('Label not found:', labelId);
+                return;
+            }
+
+            const detailDiv = document.getElementById('detailPreview');
+
+            // Uit een .Afd project: etiket zelf opbouwen uit de template
+            if (label.bron === 'afd') {
+                detailDiv.innerHTML = `
+                    <div style="display: flex; flex-direction: column; width: 100%; height: 100%;">
+                        <div style="flex: 1; background: white; border: 1px solid #ccc; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center; min-height: 150px;">
+                            ${genereerEtiketSvg(label.afd, { stijl: 'width:100%;height:auto;max-height:170px;' })}
+                        </div>
+                        <div style="width: 100%; padding: 8px 0; border-top: 1px solid #DEDAD2;">
+                            <h3 style="margin: 0 0 4px 0; font-size: 12px; font-weight: 600;">${label.name} — ${label.plateGroup}</h3>
+                            <div id="searchTerms-${labelId}" style="background: #FDF1EC; border: 1px solid #F3C3AC; border-radius: 4px; padding: 6px;"></div>
+                        </div>
+                    </div>
+                `;
+                renderLabelFields(labelId);
+                return;
+            }
+
+            // Generate large preview
+            const z64Match = label.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+            console.log('Z64 match found:', !!z64Match);
+
+            if (z64Match) {
+                console.log('Z64 data length:', z64Match[1].length);
+                const bitmap = decompressGFA(z64Match[1]);
+                console.log('Bitmap result:', bitmap ? `${bitmap.length} bytes` : 'null');
+                if (bitmap) {
+                    console.log('Starting SVG generation...');
+                    // Parse GFA parameters
+                    const gfaMatch = label.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+                    console.log('GFA match:', gfaMatch ? `${gfaMatch[1]},${gfaMatch[2]},${gfaMatch[3]}` : 'none');
+
+                    if (gfaMatch) {
+                        const bytesPerRow = parseInt(gfaMatch[3]);
+                        const width = bytesPerRow * 8;
+                        const height = Math.ceil(bitmap.length / bytesPerRow);
+                        console.log(`Generating SVG: ${width}x${height}`);
+
+                        // Generate larger SVG - simplified version
+                        let pathD = '';
+                        let pixelCount = 0;
+
+                        for (let y = 0; y < height; y++) {
+                            const flippedY = height - 1 - y;  // Flip Y axis
+                            for (let x = 0; x < width; x += 8) {
+                                const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+                                if (byteIndex >= bitmap.length) break;
+
+                                const byte = bitmap[byteIndex];
+                                for (let bit = 0; bit < 8 && x + bit < width; bit++) {
+                                    if ((byte & (0x80 >> bit)) !== 0) {
+                                        const flippedX = width - 1 - (x + bit);  // Flip X axis
+                                        pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
+                                        pixelCount++;
+                                    }
+                                }
+                            }
+                        }
+
+                        console.log(`SVG path generated: ${pixelCount} pixels`);
+
+                        // Maintain 102x62mm aspect ratio (1.645:1)
+                        const targetHeight = 150; // pixels
+                        const targetWidth = Math.round(targetHeight * 1.645);
+
+                        const svgHtml = `
+                            <div style="display: flex; flex-direction: column; width: 100%; height: 100%;">
+                                <div style="flex: 1; background: white; border: 1px solid #DEDAD2; padding: 8px; border-radius: 6px; overflow: hidden; display: flex; align-items: center; justify-content: center; min-height: 160px;">
+                                    <svg viewBox="0 0 ${width} ${height}"
+                                         xmlns="http://www.w3.org/2000/svg"
+                                         width="${targetWidth}" height="${targetHeight}"
+                                         style="background: white; image-rendering: pixelated;">
+                                        <rect width="${width}" height="${height}" fill="white" stroke="none"/>
+                                        <path d="${pathD}" fill="black" stroke="none"/>
+                                    </svg>
+                                </div>
+                                <div style="width: 100%; padding: 8px 0; border-top: 1px solid #DEDAD2;">
+                                    <h3 style="margin: 0 0 4px 0; font-size: 12px; font-weight: 600;">Label ${label.id} - ${label.plateGroup}</h3>
+                                    <div style="background: #FDF1EC; border: 1px solid #F3C3AC; border-radius: 4px; padding: 6px;">
+                                        <div id="searchTerms-${labelId}" style="display: flex; flex-wrap: wrap; gap: 3px; font-size: 9px;">
+                                            <span id="ocr-loading-${labelId}" style="background: #FDF6E3; border: 1px solid #C08A2E; border-radius: 3px; padding: 2px 4px; color: #7A5A1C;">OCR...</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `;
+
+                        detailDiv.innerHTML = svgHtml;
+
+                        // Al eerder herkend (via de 🔍-knop bij de plaat)?
+                        // Dan meteen tonen in plaats van opnieuw te OCR'en.
+                        if (label.fields || (label.extractedTerms && label.extractedTerms.length)) {
+                            renderLabelFields(labelId);
+                        } else {
+                            setTimeout(() => performOCR(labelId, width, height, pathD), 100);
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Fallback
+            detailDiv.innerHTML = `
+                <div style="text-align: center;">
+                    <h3>Label ${label.id}</h3>
+                    <p style="color: #77736C;">Grootte: ${label.size}</p>
+                    <p style="color: #77736C;">Plaat: ${label.plateGroup}</p>
+                    <p style="color: #77736C; margin-top: 20px;">(Preview niet beschikbaar)</p>
+                </div>
+            `;
+        }
+        
+        // Werken op de zichtbare set. Zonder actief filter is dat alles,
+        // dus het gedrag blijft gelijk; mét filter blijft de selectie
+        // buiten het filter onaangeroerd.
+        function selectAll() {
+            getVisibleLabels().forEach(l => selected.add(l.id));
+            updateUI();
+        }
+
+        function deselectAll() {
+            getVisibleLabels().forEach(l => selected.delete(l.id));
+            updateUI();
+        }
+        
+        function updateStats() {
+            document.getElementById('totalLabels').textContent = labels.length;
+            document.getElementById('selectedLabels').textContent = selected.size;
+        }
+        
+        function updatePreview() {
+            const preview = document.getElementById('previewList');
+            if (selected.size === 0) {
+                preview.innerHTML = '<span class="preview-empty">Selecteer etiketten hierboven</span>';
+            } else {
+                const selectedLabels = labels.filter(l => selected.has(l.id));
+                preview.innerHTML = selectedLabels
+                    .map(l => `<span class="preview-tag">${l.name} (#${l.id})</span>`)
+                    .join('');
+            }
+        }
+        
+        function updatePrintButton() {
+            const btn = document.getElementById('printBtn');
+            const btnText = document.getElementById('printBtnText');
+            if (selected.size === 0) {
+                btn.disabled = true;
+                btnText.textContent = 'AFDRUKKEN';
+            } else {
+                btn.disabled = false;
+                btnText.textContent = `AFDRUKKEN (${selected.size})`;
+            }
+        }
+        
+        function printSelected() {
+            if (selected.size === 0) {
+                showStatus('Selecteer eerst etiketten', 'error');
+                return;
+            }
+            // Direct to print (no printer dialog)
+            confirmPrint();
+        }
+
+        function confirmPrint() {
+            const selectedLabels = labels.filter(l => selected.has(l.id));
+
+            // Generate HTML with label previews - clean print layout
+            let htmlContent = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <meta charset="UTF-8">
+                    <title>Afdrukken - ${selectedLabels.length} etiketten</title>
+                    <style>
+                        * { margin: 0; padding: 0; box-sizing: border-box; }
+                        body { background: white; }
+                        svg { display: block; page-break-inside: avoid; margin: 0 auto; }
+                        @page { margin: 0; size: auto; }
+                        @media print {
+                            body { margin: 0; padding: 0; }
+                            svg { margin: 0; page-break-after: always; }
+                        }
+                    </style>
+                </head>
+                <body>
+            `;
+
+            selectedLabels.forEach(label => {
+                // Render label to SVG (same as detail preview)
+                const svgCode = renderLabelSvg(label);
+                htmlContent += svgCode; // Direct SVG, no wrapper
+            });
+
+            htmlContent += `
+                </body>
+                </html>
+            `;
+
+            // Open print window
+            const printWindow = window.open('', '', 'width=900,height=700');
+            printWindow.document.write(htmlContent);
+            printWindow.document.close();
+
+            setTimeout(() => {
+                printWindow.print();
+                // Log the print action
+                logPrint(Array.from(selected), 'Zebra Printer');
+            }, 500);
+
+            showStatus(`${selected.size} etiket(ten) gereed voor afdrukken!`, 'success');
+        }
+
+        function renderLabelSvg(label) {
+            // Uit een .Afd project: opbouwen uit de template op ware grootte
+            if (label.bron === 'afd') {
+                return genereerEtiketSvg(label.afd, { stijl: 'width:102mm;height:62mm;display:block;' });
+            }
+            try {
+                const z64Match = label.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+                if (!z64Match) return '';
+
+                const bitmap = decompressGFA(z64Match[1]);
+                if (!bitmap) return '';
+
+                const gfaMatch = label.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+                if (!gfaMatch) return '';
+
+                const bytesPerRow = parseInt(gfaMatch[3]);
+                const width = bytesPerRow * 8;
+                const height = Math.ceil(bitmap.length / bytesPerRow);
+
+                let pathD = '';
+                for (let y = 0; y < height; y++) {
+                    const flippedY = height - 1 - y;
+                    for (let x = 0; x < width; x += 8) {
+                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
+                        if (byteIndex >= bitmap.length) break;
+
+                        const byte = bitmap[byteIndex];
+                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
+                            if ((byte & (0x80 >> bit)) !== 0) {
+                                const flippedX = width - 1 - (x + bit);
+                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
+                            }
+                        }
+                    }
+                }
+
+                // 203 DPI (standard Zebra): 102mm = 815px, 62mm = 497px
+                const dpi = 203;
+                const mmToInch = 1 / 25.4;
+                const widthInches = width / dpi;
+                const heightInches = height / dpi;
+                const widthCm = widthInches * 2.54;
+                const heightCm = heightInches * 2.54;
+
+                return `<svg viewBox="0 0 ${width} ${height}" width="${widthInches}in" height="${heightInches}in" xmlns="http://www.w3.org/2000/svg">
+                    <rect width="${width}" height="${height}" fill="white"/>
+                    <path d="${pathD}" fill="black"/>
+                </svg>`;
+            } catch (error) {
+                console.error('SVG render error:', error);
+                return '';
+            }
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.className = `status-message ${type}`;
+            setTimeout(() => {
+                statusDiv.className = 'status-message';
+            }, 5000);
+        }
+
+        function selectAllInPlate(plateGroup) {
+            labels.forEach(label => {
+                if (label.plateGroup === plateGroup) {
+                    selected.add(label.id);
+                }
+            });
+            updateUI();
+        }
+
+        function deselectAllInPlate(plateGroup) {
+            labels.forEach(label => {
+                if (label.plateGroup === plateGroup) {
+                    selected.delete(label.id);
+                }
+            });
+            updateUI();
+        }
+
+        function decompressGFA(gfaData) {
+            try {
+                // GFA can be passed as:
+                // 1. ":Z64:base64data" (with marker)
+                // 2. "base64data" (without marker, just the data)
+
+                // Remove newlines and spaces
+                const cleaned = gfaData.replace(/[\s\n\r]/g, '');
+
+                // Extract base64 data
+                let base64Data = cleaned;
+                const markerMatch = cleaned.match(/:Z64:([A-Za-z0-9\/+=]+)/);
+                if (markerMatch) {
+                    base64Data = markerMatch[1];
+                } else {
+                    // No marker, use the whole cleaned string as base64
+                    base64Data = cleaned.replace(/:Z64:/g, '');
+                }
+
+                // Decode base64
+                const binaryString = atob(base64Data);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                // Decompress using pako
+                const decompressed = pako.inflate(bytes);
+                return decompressed;
+            } catch (e) {
+                console.error('GFA decompression error:', e.message);
+                return null;
+            }
+        }
+
+        function generateLabelPreviewFromGFA(labelData, gfaString) {
+            // Parse GFA parameters: ^GFA,bytes,total,perrow
+            const gfaMatch = labelData.match(/\^GFA,(\d+),(\d+),(\d+)/);
+            if (!gfaMatch) {
+                return generateSimpleLabelPreview(labelData);
+            }
+
+            const bytesRead = parseInt(gfaMatch[1]);
+            const totalBytes = parseInt(gfaMatch[2]);
+            const bytesPerRow = parseInt(gfaMatch[3]);
+            const width = bytesPerRow * 8; // 8 pixels per byte
+            const height = Math.ceil(totalBytes / bytesPerRow);
+
+            // Decompress
+            const bitmap = decompressGFA(gfaString);
+            if (!bitmap) {
+                return generateSimpleLabelPreview(labelData);
+            }
+
+            // Generate SVG from bitmap
+            const actualHeight = bitmap.length / bytesPerRow;
+            let svgPath = '';
+            let pathD = '';
+            let count = 0;
+
+            for (let y = 0; y < Math.min(actualHeight, 120); y++) {
+                for (let x = 0; x < Math.min(width, 960); x += 8) {
+                    const byteIndex = y * bytesPerRow + (x / 8);
+                    if (byteIndex >= bitmap.length) break;
+
+                    const byte = bitmap[byteIndex];
+                    // Each bit represents a pixel (1 = black, 0 = white)
+                    for (let bit = 0; bit < 8; bit++) {
+                        if ((byte & (0x80 >> bit)) !== 0) {
+                            const px = x + bit;
+                            const py = y;
+                            pathD += `M${px},${py}h1v1h-1Z`;
+                            count++;
+                        }
+                    }
+                }
+            }
+
+            // Scale down for display
+            const scale = Math.min(120 / width, 90 / Math.min(actualHeight, 120));
+
+            const svgWidth = Math.min(width, 960);
+            const svgHeight = Math.min(actualHeight, 120);
+
+            return `
+                <svg viewBox="0 0 ${svgWidth} ${svgHeight}"
+                     xmlns="http://www.w3.org/2000/svg"
+                     style="background: white; border: 1px solid #77736C; max-width: 120px; max-height: 90px; transform: rotate(180deg); transform-origin: center;">
+                    <rect width="${svgWidth}" height="${svgHeight}" fill="white" stroke="none"/>
+                    <path d="${pathD}" fill="black" stroke="none"/>
+                </svg>
+            `;
+        }
+
+        function generateSimpleLabelPreview(labelData) {
+            // Simple preview when GFA can't be decoded
+            return `
+                <div style="width: 100%; height: 100%; background: linear-gradient(45deg, #EFEDE8 25%, transparent 25%, transparent 75%, #EFEDE8 75%, #EFEDE8),
+                            linear-gradient(45deg, #EFEDE8 25%, transparent 25%, transparent 75%, #EFEDE8 75%, #EFEDE8);
+                     background-size: 20px 20px; background-position: 0 0, 10px 10px;
+                     border: 1px solid #DEDAD2; display: flex; align-items: center; justify-content: center;">
+                    <span style="font-size: 10px; color: #77736C;">Label preview</span>
+                </div>
+            `;
+        }
+
+        // Zoekt een veldwaarde op via de plaatshouder uit de template
+        // (PartRef, PartL, ...) in plaats van via de weergavenaam, zodat dit
+        // ook werkt bij een template met andere veldbenamingen.
+        function veldOpPlaatshouder(label, plaatshouder) {
+            if (!label.fields || !labelTemplate) return null;
+            for (const v of label.fields) {
+                const laag = labelTemplate.layers.find(l => l.n === v.laag);
+                if (laag && laag.placeholders.indexOf(plaatshouder) !== -1) {
+                    return veldOnleesbaar(v) ? null : v.waarde;
+                }
+            }
+            return null;
+        }
+
+        // Inhoud van een kaartje in het overzicht. Bewust tekst en geen
+        // miniatuur: het opbouwen van 600 miniatuur-SVG's kostte bijna twee
+        // seconden bij de eerste weergave en een halve seconde bij élke
+        // herweergave (dus bij iedere vinkje-klik), plus ~35 MB geheugen.
+        // Het etiket zelf blijft volledig zichtbaar in het detailpaneel.
+        function kaartTekst(label) {
+            // Uit een .Afd project zijn de waarden rechtstreeks bekend
+            if (label.bron === 'afd' && label.afd) {
+                const s = label.afd;
+                return `
+                    <div style="font-weight: 600; font-size: 12px; color: #343432; word-break: break-word; margin-bottom: 3px;">${s.ref}</div>
+                    <div style="font-size: 11px; color: #77736C;">${s.L} x ${s.W} x ${s.T}</div>
+                    ${s.oms ? `<div style="font-size: 10px; color: #A8A49C; margin-top: 2px;">${s.oms}</div>` : ''}
+                `;
+            }
+
+            const ref = veldOpPlaatshouder(label, 'PartRef');
+            const afm = veldOpPlaatshouder(label, 'PartL');
+
+            if (ref || afm) {
+                return `
+                    ${ref ? `<div style="font-weight: 600; font-size: 12px; color: #343432; word-break: break-word; margin-bottom: 3px;">${ref}</div>` : ''}
+                    ${afm ? `<div style="font-size: 11px; color: #77736C; word-break: break-word;">${afm}</div>` : ''}
+                `;
+            }
+
+            // Wel OCR gedraaid, maar geen template: toon de eerste termen
+            if (label.extractedTerms && label.extractedTerms.length) {
+                return `<div style="font-size: 11px; color: #343432; word-break: break-word;">
+                            ${label.extractedTerms.slice(0, 2).join('<br>')}
+                        </div>`;
+            }
+
+            return `<div style="font-size: 11px; color: #A8A49C; font-style: italic;">
+                        nog niet gelezen
+                    </div>`;
+        }
+
+        function generateLabelPreview(label) {
+            // Check cache first
+            if (previewCache[label.id]) {
+                return previewCache[label.id];
+            }
+
+            let preview;
+            const z64Match = label.data.match(/:Z64:([A-Za-z0-9\/+\s\n=]+)/);
+
+            if (z64Match) {
+                const gfaParamMatch = label.data.match(/\^GFA,(\d+),(\d+),(\d+)/);
+                if (gfaParamMatch) {
+                    preview = generateLabelPreviewFromGFA(label.data, z64Match[1]);
+                } else {
+                    preview = generateSimpleLabelPreview(label.data);
+                }
+            } else {
+                preview = generateSimpleLabelPreview(label.data);
+            }
+
+            // Cache the result
+            previewCache[label.id] = preview;
+            return preview;
+        }
+        
+        // Search functionality
+        function searchLabels(query) {
+            searchQuery = query || '';
+            // Echt filteren i.p.v. dimmen. De selectie zelf (`selected`) blijft
+            // ongemoeid, dus wie je aanvinkt binnen een filter blijft aangevinkt
+            // zodra het filter weer gewist wordt.
+            updateUI();
+        }
+
+        function clearSearch() {
+            const input = document.getElementById('labelSearch');
+            if (input) input.value = '';
+            searchLabels('');
+        }
+
+        // Toont "X van Y etiketten" + knop om het filter te wissen
+        function updateSearchInfo(visibleCount) {
+            const info = document.getElementById('searchInfo');
+            if (!info) return;
+
+            if (!searchQuery.trim()) {
+                info.style.display = 'none';
+                return;
+            }
+
+            const selectedVisible = getVisibleLabels().filter(l => selected.has(l.id)).length;
+            info.style.display = 'flex';
+            info.innerHTML = `
+                <span><strong>${visibleCount}</strong> van ${labels.length} etiketten${selectedVisible > 0 ? ` &middot; ${selectedVisible} geselecteerd` : ''}</span>
+                <button onclick="selectAllVisible()"
+                        style="padding: 4px 10px; background: #EA6431; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                    Selecteer deze ${visibleCount}
+                </button>
+                <button onclick="clearSearch()"
+                        style="padding: 4px 10px; background: white; color: #77736C; border: 1px solid #DEDAD2; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                    Filter wissen
+                </button>
+            `;
+        }
+
+        // Selecteert alleen wat nu zichtbaar is (blijft staan na filter wissen)
+        function selectAllVisible() {
+            getVisibleLabels().forEach(l => selected.add(l.id));
+            updateUI();
+        }
+
+        // Add search event listener when detail panel loads
+        setTimeout(() => {
+            const searchInput = document.getElementById('labelSearch');
+            if (searchInput) {
+                searchInput.addEventListener('input', (e) => searchLabels(e.target.value));
+            }
+            // Eerder geüploade template terughalen
+            loadStoredTemplate();
+        }, 100);
+
+        // Initialiseren (wacht op bestand upload)
+    </script>
+</body>
+</html>
