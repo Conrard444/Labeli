@@ -469,11 +469,23 @@
         let recentProjects = []; // Track recent projects
         let searchQuery = ''; // Active zoekfilter (leeg = geen filter)
 
-        // Alle doorzoekbare tekst van een etiket, inclusief OCR-resultaat
+        // Alle doorzoekbare tekst van een etiket, inclusief OCR-resultaat.
+        // Per etiket gecached: zoeken herhaalt deze string bij elke toetsaanslag,
+        // en bij honderden etiketten met OCR-tekst is dat duur.
+        const haystackCache = new Map();
         function labelHaystack(label) {
+            let hay = haystackCache.get(label.id);
+            if (hay !== undefined) return hay;
             const terms = label.extractedTerms ? label.extractedTerms.join(' ') : '';
             const raw = label.rawText || '';
-            return `label ${label.id} ${label.name} ${label.plateGroup} ${terms} ${raw}`.toLowerCase();
+            hay = `label ${label.id} ${label.name} ${label.plateGroup} ${terms} ${raw}`.toLowerCase();
+            haystackCache.set(label.id, hay);
+            return hay;
+        }
+        // Zoekcache ongeldig maken zodra OCR-tekst of groepsnaam verandert
+        function haystackCacheWissen(labelId) {
+            if (labelId === undefined) haystackCache.clear();
+            else haystackCache.delete(labelId);
         }
 
         // Eén bron van waarheid: welke etiketten zijn nu zichtbaar?
@@ -481,11 +493,12 @@
         function getVisibleLabels() {
             let result = labels;
 
-            // Filter op geselecteerde platen
+            // Filter op geselecteerde platen (Map i.p.v. find() per etiket)
             if (selectedPlates.size > 0) {
+                const plateIdByCode = new Map(plateCodes.map(p => [p.plateCode, p.id]));
                 result = result.filter(l => {
-                    const plate = plateCodes.find(p => p.plateCode === l.plateGroup);
-                    return plate && selectedPlates.has(plate.id);
+                    const id = plateIdByCode.get(l.plateGroup);
+                    return id !== undefined && selectedPlates.has(id);
                 });
             }
 
@@ -712,6 +725,8 @@
 
             labels = [];
             plateCodes = [];
+            previewCache = {};
+            haystackCacheWissen();
             let currentPlateType = null;
             let plateCounter = 0;
             let realLabelCount = 0;  // Counter for actual labels shown to user
@@ -860,8 +875,16 @@
 
             panel.style.display = 'block';
 
-            // Group plates by material (extract material name from plateCode)
+            // Group plates by material (extract material name from plateCode).
+            // Aantallen per plaat in dezelfde pass: per plaat filteren over alle
+            // etiketten is kwadratisch bij honderden etiketten.
             const materialGroups = {};
+            const labelCountByPlateId = new Map();
+            const plateIdByCode = new Map(plateCodes.map(p => [p.plateCode, p.id]));
+            labels.forEach(l => {
+                const pid = plateIdByCode.get(l.plateGroup);
+                if (pid !== undefined) labelCountByPlateId.set(pid, (labelCountByPlateId.get(pid) || 0) + 1);
+            });
             plateCodes.forEach(plate => {
                 // Extract material name (e.g. "MDF18" from "MDF18 Plaat 1")
                 const materialMatch = plate.plateCode.match(/^(.+?)\s+Plaat\s+\d+$/);
@@ -910,10 +933,7 @@
                 if (!isCollapsed) {
                     plates.forEach(plate => {
                         const isSelected = selectedPlates.has(plate.id);
-                        const plateLabels = labels.filter(l => {
-                            const pId = plateCodes.find(p => p.plateCode === l.plateGroup)?.id;
-                            return pId === plate.id;
-                        });
+                        const plateLabelCount = labelCountByPlateId.get(plate.id) || 0;
 
                         html += `
                             <div style="display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 28px; background: ${isSelected ? '#EA6431' : '#F6F4F0'}; border: 1px solid #DEDAD2; border-radius: 4px; font-size: 11px; margin-bottom: 2px; transition: all 0.2s;"
@@ -926,7 +946,7 @@
                                     ${plate.plateCode}
                                 </div>
                                 <div style="font-size: 10px; color: ${isSelected ? '#F3C3AC' : '#77736C'}; min-width: 18px; text-align: right; flex-shrink: 0;">
-                                    ${plateLabels.length}
+                                    ${plateLabelCount}
                                 </div>
                                 <button onclick="event.stopPropagation(); extractSinglePlateOCR(${plate.id})"
                                         style="padding: 1px 4px; background: #343432; color: white; border: none; border-radius: 2px; cursor: pointer; font-size: 10px; white-space: nowrap; flex-shrink: 0;"
@@ -972,8 +992,7 @@
                 }
 
                 // Also select/deselect all labels for this plate
-                const plateLabels = labels.filter(l => l.plateGroup === plate.plateCode);
-                plateLabels.forEach(label => {
+                labelsVanPlaatNaam(plate.plateCode).forEach(label => {
                     if (allSelected) {
                         selected.delete(label.id);
                     } else {
@@ -1003,6 +1022,20 @@
             const plate = plateCodes.find(p => p.id === plateId);
             if (!plate) return [];
             return labels.filter(l => l.plateGroup === plate.plateCode);
+        }
+
+        // Index per plaatnaam: etiketten per plaat zonder filter() over alles
+        const labelsPerPlaat = new Map();
+        function labelsVanPlaatNaam(plateGroup) {
+            if (labelsPerPlaat.size === 0) {
+                labels.forEach(l => {
+                    const g = l.plateGroup || 'Overig';
+                    let lijst = labelsPerPlaat.get(g);
+                    if (!lijst) { lijst = []; labelsPerPlaat.set(g, lijst); }
+                    lijst.push(l);
+                });
+            }
+            return labelsPerPlaat.get(plateGroup) || [];
         }
 
         function platenVanMateriaal(material) {
@@ -1144,23 +1177,6 @@
                 const width = bytesPerRow * 8;
                 const height = Math.ceil(bitmap.length / bytesPerRow);
 
-                let pathD = '';
-                for (let y = 0; y < height; y++) {
-                    const flippedY = height - 1 - y;
-                    for (let x = 0; x < width; x += 8) {
-                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
-                        if (byteIndex >= bitmap.length) break;
-
-                        const byte = bitmap[byteIndex];
-                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
-                            if ((byte & (0x80 >> bit)) !== 0) {
-                                const flippedX = width - 1 - (x + bit);
-                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
-                            }
-                        }
-                    }
-                }
-
                 // Render at 2x scale for better OCR accuracy
                 const scale = 2;
                 const canvas = document.createElement('canvas');
@@ -1171,16 +1187,7 @@
                 ctx.fillStyle = 'white';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 ctx.fillStyle = 'black';
-
-                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
-                for (const part of pathParts) {
-                    const match = part.match(/M(\d+),(\d+)/);
-                    if (match) {
-                        const x = parseInt(match[1]) * scale;
-                        const y = parseInt(match[2]) * scale;
-                        ctx.fillRect(x, y, scale, scale);
-                    }
-                }
+                bitmapNaarCanvas(ctx, bitmap, bytesPerRow, width, height, scale);
 
                 const imageData = canvas.toDataURL('image/png', 0.95);
 
@@ -1212,9 +1219,11 @@
                             }
                             controleerStructuur(velden);
                             label.fields = velden;
-                            label.extractedTerms = betrouwbareWaarden(velden);
-                            label.rawText = betrouwbareWaarden(velden).join('\n');
+                            const betrouwbaar = betrouwbareWaarden(velden);
+                            label.extractedTerms = betrouwbaar;
+                            label.rawText = betrouwbaar.join('\n');
                             label.discardedNoise = ruis;
+                            haystackCacheWissen(label.id);
                             return;
                         }
                         // Geen enkel veld herkend: terugvallen op losse termen
@@ -1231,6 +1240,7 @@
                     label.fields = null;
                     label.extractedTerms = terms;
                     label.rawText = text;
+                    haystackCacheWissen(label.id);
                 }
             } catch (error) {
                 console.error('Label OCR error:', error);
@@ -1440,6 +1450,8 @@
                     // Omzetten naar de etikettenlijst die de rest van de tool
                     // gebruikt. De velden zijn hier exact bekend, dus geen OCR
                     // en geen onzekerheid.
+                    previewCache = {};
+                    haystackCacheWissen();
                     labels = stukken.map((s, i) => ({
                         id: i + 1,
                         name: s.ref,
@@ -2180,8 +2192,7 @@
             // Also select/deselect all labels for this plate
             const plate = plateCodes.find(p => p.id === plateId);
             if (plate) {
-                const plateLabels = labels.filter(l => l.plateGroup === plate.plateCode);
-                plateLabels.forEach(label => {
+                labelsVanPlaatNaam(plate.plateCode).forEach(label => {
                     if (wasSelected) {
                         selected.delete(label.id);
                     } else {
@@ -2224,7 +2235,7 @@
                     labelGroups.innerHTML = ''; // geen verouderde kaarten laten staan
                     labelGroups.style.display = 'none';
                     labelsGrid.style.display = 'none';
-                    updateSearchInfo(0);
+                    updateSearchInfo(0, 0);
                     updateStats();
                     updatePreview();
                     updatePrintButton();
@@ -2232,7 +2243,8 @@
                 }
 
                 emptyState.style.display = 'none';
-                updateSearchInfo(filteredLabels.length);
+                updateSearchInfo(filteredLabels.length,
+                                 filteredLabels.filter(l => selected.has(l.id)).length);
 
                 // Group labels by plate
                 const groups = {};
@@ -2272,6 +2284,7 @@
                                 ${groupLabels.map(label => {
                                     return `
                                     <div class="label-card ${selected.has(label.id) ? 'selected' : ''}"
+                                         data-label-id="${label.id}"
                                          onclick="showDetailPreview(${label.id})"
                                          style="cursor: pointer;">
                                         <input type="checkbox"
@@ -2310,21 +2323,12 @@
             }
 
             // Direct DOM update instead of full updateUI()
-            const label = labels.find(l => l.id === id);
-            if (!label) return;
-
-            // Find and update the label card
-            const cards = document.querySelectorAll('.label-card');
-            cards.forEach(card => {
-                const cardNum = card.textContent.match(/Etiket #(\d+)/)?.[1];
-                if (cardNum && parseInt(cardNum) === id) {
-                    const checkbox = card.querySelector('input[type="checkbox"]');
-                    if (checkbox) {
-                        checkbox.checked = selected.has(id);
-                        card.classList.toggle('selected', selected.has(id));
-                    }
-                }
-            });
+            const card = document.querySelector(`.label-card[data-label-id="${id}"]`);
+            if (card) {
+                const checkbox = card.querySelector('input[type="checkbox"]');
+                if (checkbox) checkbox.checked = selected.has(id);
+                card.classList.toggle('selected', selected.has(id));
+            }
 
             // Update stats and button (lightweight operations)
             updateStats();
@@ -2346,17 +2350,11 @@
 
                 // Draw the path
                 ctx.fillStyle = 'black';
-                ctx.strokeStyle = 'black';
-
-                // Parse and render path
-                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
-                for (const part of pathParts) {
-                    const match = part.match(/M(\d+),(\d+)/);
-                    if (match) {
-                        const x = parseInt(match[1]);
-                        const y = parseInt(match[2]);
-                        ctx.fillRect(x, y, 1, 1);
-                    }
+                const runs = pathD.match(/M(\d+),(\d+)h(\d+)/g) || [];
+                const runRe = /M(\d+),(\d+)h(\d+)/;
+                for (const run of runs) {
+                    const m = runRe.exec(run);
+                    if (m) ctx.fillRect(+m[1], +m[2], +m[3], 1);
                 }
 
                 const imageData = canvas.toDataURL('image/png');
@@ -2394,9 +2392,11 @@
                                 }
                                 controleerStructuur(velden);
                                 label.fields = velden;
-                                label.extractedTerms = betrouwbareWaarden(velden);
-                                label.rawText = betrouwbareWaarden(velden).join('\n');
+                                const betrouwbaar = betrouwbareWaarden(velden);
+                                label.extractedTerms = betrouwbaar;
+                                label.rawText = betrouwbaar.join('\n');
                                 label.discardedNoise = ruis;
+                                haystackCacheWissen(label.id);
                                 gelukt = true;
                             }
                         }
@@ -2410,6 +2410,7 @@
                             label.fields = null;
                             label.extractedTerms = terms;
                             label.rawText = text;
+                            haystackCacheWissen(label.id);
                         }
                     }
 
@@ -2480,22 +2481,23 @@
                 materialGroups[material].push(plate);
             });
 
-            // Renumber each plate and update labels (batch updates)
+            // Eén keer door labels heen: groep-bij-groep hernoemen via een
+            // vertaalmap is O(platen x etiketten); een lookup per etiket O(n).
+            const nieuweNaam = new Map();
             materialOrder.forEach(material => {
-                const plates = materialGroups[material];
-                plates.forEach((plate, index) => {
-                    const oldName = plate.plateCode;
-                    const newName = `${material} Plaat ${index + 1}`;
-                    plate.plateCode = newName;
-
-                    // Update all labels at once
-                    labels.forEach(label => {
-                        if (label.plateGroup === oldName) {
-                            label.plateGroup = newName;
-                        }
-                    });
+                materialGroups[material].forEach((plate, index) => {
+                    nieuweNaam.set(plate.plateCode, `${material} Plaat ${index + 1}`);
                 });
             });
+            plateCodes.forEach(plate => {
+                plate.plateCode = nieuweNaam.get(plate.plateCode) || plate.plateCode;
+            });
+            labels.forEach(label => {
+                const n = nieuweNaam.get(label.plateGroup);
+                if (n) label.plateGroup = n;
+            });
+            haystackCacheWissen();
+            labelsPerPlaat.clear();
 
             // Single UI update at the end
             updateUI();
@@ -2546,23 +2548,6 @@
                 const width = bytesPerRow * 8;
                 const height = Math.ceil(bitmap.length / bytesPerRow);
 
-                let pathD = '';
-                for (let y = 0; y < height; y++) {
-                    const flippedY = height - 1 - y;
-                    for (let x = 0; x < width; x += 8) {
-                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
-                        if (byteIndex >= bitmap.length) break;
-
-                        const byte = bitmap[byteIndex];
-                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
-                            if ((byte & (0x80 >> bit)) !== 0) {
-                                const flippedX = width - 1 - (x + bit);
-                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
-                            }
-                        }
-                    }
-                }
-
                 // Render at 2x scale for better OCR accuracy
                 const scale = 2;
                 const canvas = document.createElement('canvas');
@@ -2576,15 +2561,7 @@
 
                 // Black pixels (scaled)
                 ctx.fillStyle = 'black';
-                const pathParts = pathD.match(/M\d+,\d+h1v1h-1Z/g) || [];
-                for (const part of pathParts) {
-                    const match = part.match(/M(\d+),(\d+)/);
-                    if (match) {
-                        const x = parseInt(match[1]) * scale;
-                        const y = parseInt(match[2]) * scale;
-                        ctx.fillRect(x, y, scale, scale);
-                    }
-                }
+                bitmapNaarCanvas(ctx, bitmap, bytesPerRow, width, height, scale);
 
                 const imageData = canvas.toDataURL('image/png', 0.95);
 
@@ -2671,27 +2648,7 @@
                         console.log(`Generating SVG: ${width}x${height}`);
 
                         // Generate larger SVG - simplified version
-                        let pathD = '';
-                        let pixelCount = 0;
-
-                        for (let y = 0; y < height; y++) {
-                            const flippedY = height - 1 - y;  // Flip Y axis
-                            for (let x = 0; x < width; x += 8) {
-                                const byteIndex = y * bytesPerRow + Math.floor(x / 8);
-                                if (byteIndex >= bitmap.length) break;
-
-                                const byte = bitmap[byteIndex];
-                                for (let bit = 0; bit < 8 && x + bit < width; bit++) {
-                                    if ((byte & (0x80 >> bit)) !== 0) {
-                                        const flippedX = width - 1 - (x + bit);  // Flip X axis
-                                        pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
-                                        pixelCount++;
-                                    }
-                                }
-                            }
-                        }
-
-                        console.log(`SVG path generated: ${pixelCount} pixels`);
+                        const pathD = bitmapNaarPad(bitmap, bytesPerRow, width, height);
 
                         // Maintain 102x62mm aspect ratio (1.645:1)
                         const targetHeight = 150; // pixels
@@ -2863,22 +2820,7 @@
                 const width = bytesPerRow * 8;
                 const height = Math.ceil(bitmap.length / bytesPerRow);
 
-                let pathD = '';
-                for (let y = 0; y < height; y++) {
-                    const flippedY = height - 1 - y;
-                    for (let x = 0; x < width; x += 8) {
-                        const byteIndex = y * bytesPerRow + Math.floor(x / 8);
-                        if (byteIndex >= bitmap.length) break;
-
-                        const byte = bitmap[byteIndex];
-                        for (let bit = 0; bit < 8 && x + bit < width; bit++) {
-                            if ((byte & (0x80 >> bit)) !== 0) {
-                                const flippedX = width - 1 - (x + bit);
-                                pathD += `M${flippedX},${flippedY}h1v1h-1Z`;
-                            }
-                        }
-                    }
-                }
+                const pathD = bitmapNaarPad(bitmap, bytesPerRow, width, height);
 
                 // 203 DPI (standard Zebra): 102mm = 815px, 62mm = 497px
                 const dpi = 203;
@@ -2908,23 +2850,57 @@
         }
 
         function selectAllInPlate(plateGroup) {
-            labels.forEach(label => {
-                if (label.plateGroup === plateGroup) {
-                    selected.add(label.id);
-                }
-            });
+            labelsVanPlaatNaam(plateGroup).forEach(label => selected.add(label.id));
             updateUI();
         }
 
         function deselectAllInPlate(plateGroup) {
-            labels.forEach(label => {
-                if (label.plateGroup === plateGroup) {
-                    selected.delete(label.id);
-                }
-            });
+            labelsVanPlaatNaam(plateGroup).forEach(label => selected.delete(label.id));
             updateUI();
         }
 
+        // Zet een GFA-bitmap om naar een SVG-path met horizontale runs.
+        // Per aaneengesloten reeks zwarte pixels één commando (M x,y h n Z)
+        // i.p.v. één commando per pixel: bij een vol etiket scheelt dat ~90%
+        // pathlengte en is de opbouw meerdere malen sneller dan string +=.
+        function bitmapNaarPad(bitmap, bytesPerRow, width, height) {
+            const chunks = [];
+            for (let y = 0; y < height; y++) {
+                const flippedY = height - 1 - y;
+                const row = y * bytesPerRow;
+                let runStart = -1;
+                for (let x = 0; x < width; x++) {
+                    const bi = row + (x >> 3);
+                    const on = bi < bitmap.length && (bitmap[bi] & (0x80 >> (x & 7))) !== 0;
+                    if (on) {
+                        if (runStart < 0) runStart = x;
+                    } else if (runStart >= 0) {
+                        chunks.push(`M${width - x},${flippedY}h${x - runStart}v1h-${x - runStart}Z`);
+                        runStart = -1;
+                    }
+                }
+                if (runStart >= 0) {
+                    chunks.push(`M0,${flippedY}h${width - runStart}v1h-${width - runStart}Z`);
+                }
+            }
+            return chunks.join('');
+        }
+        // Tekent een GFA-bitmap (1 bit = 1 pixel) direct op een canvas,
+        // met optionele schaal. Vermijdt de omweg via een SVG-path-string.
+        function bitmapNaarCanvas(ctx, bitmap, bytesPerRow, width, height, scale) {
+            const fill = ctx.fillStyle;
+            for (let y = 0; y < height; y++) {
+                const row = y * bytesPerRow;
+                for (let x = 0; x < width; x++) {
+                    const bi = row + (x >> 3);
+                    if (bi >= bitmap.length) break;
+                    if ((bitmap[bi] & (0x80 >> (x & 7))) !== 0) {
+                        ctx.fillRect(x * scale, y * scale, scale, scale);
+                    }
+                }
+            }
+            ctx.fillStyle = fill;
+        }
         function decompressGFA(gfaData) {
             try {
                 // GFA can be passed as:
@@ -2981,27 +2957,29 @@
 
             // Generate SVG from bitmap
             const actualHeight = bitmap.length / bytesPerRow;
-            let svgPath = '';
-            let pathD = '';
-            let count = 0;
-
-            for (let y = 0; y < Math.min(actualHeight, 120); y++) {
-                for (let x = 0; x < Math.min(width, 960); x += 8) {
-                    const byteIndex = y * bytesPerRow + (x / 8);
-                    if (byteIndex >= bitmap.length) break;
-
-                    const byte = bitmap[byteIndex];
-                    // Each bit represents a pixel (1 = black, 0 = white)
-                    for (let bit = 0; bit < 8; bit++) {
-                        if ((byte & (0x80 >> bit)) !== 0) {
-                            const px = x + bit;
-                            const py = y;
-                            pathD += `M${px},${py}h1v1h-1Z`;
-                            count++;
-                        }
+            // Run-length versie zonder flip, voor de kleine miniatuur: rijeinde
+            // kan buiten de bitmap vallen, vandaar de extra lengteparameter.
+            const miniWidth = Math.min(width, 960);
+            const miniHeight = Math.min(actualHeight, 120);
+            const chunks = [];
+            for (let y = 0; y < miniHeight; y++) {
+                const row = y * bytesPerRow;
+                let runStart = -1;
+                for (let x = 0; x < miniWidth; x++) {
+                    const bi = row + (x >> 3);
+                    const on = bi < bitmap.length && (bitmap[bi] & (0x80 >> (x & 7))) !== 0;
+                    if (on) {
+                        if (runStart < 0) runStart = x;
+                    } else if (runStart >= 0) {
+                        chunks.push(`M${runStart},${y}h${x - runStart}v1h-${x - runStart}Z`);
+                        runStart = -1;
                     }
                 }
+                if (runStart >= 0) {
+                    chunks.push(`M${runStart},${y}h${miniWidth - runStart}v1h-${miniWidth - runStart}Z`);
+                }
             }
+            const pathD = chunks.join('');
 
             // Scale down for display
             const scale = Math.min(120 / width, 90 / Math.min(actualHeight, 120));
@@ -3124,7 +3102,7 @@
         }
 
         // Toont "X van Y etiketten" + knop om het filter te wissen
-        function updateSearchInfo(visibleCount) {
+        function updateSearchInfo(visibleCount, selectedVisible) {
             const info = document.getElementById('searchInfo');
             if (!info) return;
 
@@ -3133,7 +3111,7 @@
                 return;
             }
 
-            const selectedVisible = getVisibleLabels().filter(l => selected.has(l.id)).length;
+            selectedVisible = selectedVisible || 0;
             info.style.display = 'flex';
             info.innerHTML = `
                 <span><strong>${visibleCount}</strong> van ${labels.length} etiketten${selectedVisible > 0 ? ` &middot; ${selectedVisible} geselecteerd` : ''}</span>
@@ -3158,7 +3136,13 @@
         setTimeout(() => {
             const searchInput = document.getElementById('labelSearch');
             if (searchInput) {
-                searchInput.addEventListener('input', (e) => searchLabels(e.target.value));
+                // Debounce: volle herweergave bij elke toetsaanslag is duur
+                // bij honderden etiketten; 150 ms voelt nog direct aan.
+                let zoekTimer = null;
+                searchInput.addEventListener('input', (e) => {
+                    clearTimeout(zoekTimer);
+                    zoekTimer = setTimeout(() => searchLabels(e.target.value), 150);
+                });
             }
             // Eerder geüploade template terughalen
             loadStoredTemplate();
