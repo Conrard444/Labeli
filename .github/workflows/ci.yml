@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: HTML & JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code ophalen
+        uses: actions/checkout@v4
+
+      - name: Node installeren
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Inline scripts extraheren
+        run: |
+          python3 - <<'EOF'
+          import pathlib, re, sys
+          html = pathlib.Path('index.html').read_text(encoding='utf-8')
+          scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
+          if not scripts:
+              sys.exit('Geen inline <script>-blok gevonden in index.html')
+          for i, script in enumerate(scripts):
+              pathlib.Path(f'script_{i}.js').write_text(script, encoding='utf-8')
+          print(f'{len(scripts)} inline script(s) geëxtraheerd')
+          EOF
+
+      - name: JavaScript-syntaxis controleren
+        run: |
+          status=0
+          for f in script_*.js; do
+            echo "node --check $f"
+            node --check "$f" || status=1
+          done
+          rm -f script_*.js
+          exit $status
+
+      - name: Externe scripts controleren
+        run: |
+          status=0
+          for url in \
+            "https://cdn.jsdelivr.net/npm/pako@2/dist/pako.min.js" \
+            "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js" \
+            "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
+          do
+            if ! grep -qF "$url" index.html; then
+              echo "Ontbrekende script-referentie: $url"
+              status=1
+            fi
+          done
+          exit $status
